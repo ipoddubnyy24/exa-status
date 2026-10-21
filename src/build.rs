@@ -770,13 +770,16 @@ impl<'a> Context<'a> {
             &raw.sd_open.iter().collect::<Vec<_>>(),
             self.window(ViewId::ExaSd, &raw.sd_closed, &phases),
         );
-        // Open scope counts every EXA SD item; closures and additions only
-        // those in the phases.
+        // Open scope counts the open EXA SD items other than Test items and
+        // says how many those are; closures and additions count only items
+        // in the phases.
         if let Some(open) = sd_view.kpis.first_mut() {
-            open.note = format!(
-                "{tests} are Test items; every open {} item counts",
-                cfg.exa_sd_project
-            );
+            open.value = (raw.sd_open.len() - tests).to_string();
+            open.note = if tests == 1 {
+                "1 is a Test item".into()
+            } else {
+                format!("{tests} are Test items")
+            };
         }
         if let Some(window) = sd_view.kpis.last_mut() {
             window.note = "closed / added in the phases (new or moved in)".into();
@@ -1783,6 +1786,30 @@ mod tests {
         assert!(
             view(&snap, EXA_SD).blockers.is_empty(),
             "the Blocker test case is not a blocker"
+        );
+    }
+
+    #[test]
+    fn exa_sd_open_scope_leaves_out_test_items_and_says_how_many() {
+        let mut raw = raw();
+        let scope = |raw: &RawData| {
+            let snap = build(raw);
+            let v = view(&snap, EXA_SD);
+            let open = v.kpis.first().unwrap();
+            (open.value.clone(), open.note.clone(), v.items.len())
+        };
+
+        assert_eq!(
+            scope(&raw),
+            ("1".to_string(), "1 is a Test item".to_string(), 2),
+            "the table still lists the Test item"
+        );
+        let mut test = in_version("EXM-10", "NVMesh-P2", "New", Category::New);
+        test.issue_type = "Test".into();
+        raw.sd_open.push(test);
+        assert_eq!(
+            scope(&raw),
+            ("1".to_string(), "2 are Test items".to_string(), 3)
         );
     }
 
