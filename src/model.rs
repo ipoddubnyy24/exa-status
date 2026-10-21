@@ -18,6 +18,8 @@ pub(crate) const SNAPSHOT_FORMAT: u32 = 6;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "&'static str")]
 pub(crate) enum ViewId {
+    /// Every customer group together.
+    All,
     /// Customers other than GCP and NVIDIA.
     Others,
     /// GCP.
@@ -38,7 +40,8 @@ pub(crate) enum ViewId {
 
 impl ViewId {
     /// Every view.
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
+        Self::All,
         Self::Others,
         Self::Gcp,
         Self::Nvidia,
@@ -48,14 +51,15 @@ impl ViewId {
         Self::ExaSd,
         Self::Future,
     ];
-    /// The customer views.
-    pub(crate) const CUSTOMERS: [Self; 3] = [Self::Others, Self::Gcp, Self::Nvidia];
+    /// The customer views: `All`, which shows every group, and one per group.
+    pub(crate) const CUSTOMERS: [Self; 4] = [Self::All, Self::Others, Self::Gcp, Self::Nvidia];
     /// The views of EX releases.
     pub(crate) const RELEASES: [Self; 3] = [Self::Exa6, Self::Exa7Beta, Self::Exa7Ga];
 
     /// Its sub-tab label.
     pub(crate) fn label(self) -> &'static str {
         match self {
+            Self::All => "All",
             Self::Others => "All others",
             Self::Gcp => "GCP",
             Self::Nvidia => "NVIDIA",
@@ -70,6 +74,7 @@ impl ViewId {
     /// The id the UI knows the view by.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            Self::All => "customers-all",
             Self::Others => "customers-others",
             Self::Gcp => "customers-gcp",
             Self::Nvidia => "customers-nvidia",

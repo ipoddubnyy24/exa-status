@@ -456,11 +456,11 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
         }
     };
 
-    // Only GCP and NVIDIA tickets carry committed dates.
+    // Only GCP and NVIDIA tickets carry committed dates; All shows them too.
     let commitments = commitments::load(&cfg.commitments_file).unwrap_or_else(|e| {
         warn!("{e:#}");
         notes.push(Note::gap(
-            [ViewId::Gcp, ViewId::Nvidia],
+            [ViewId::All, ViewId::Gcp, ViewId::Nvidia],
             format!("Committed dates not read: {e:#}"),
         ));
         Commitments::new()
@@ -1474,7 +1474,10 @@ mod tests {
                 .find(|q| q.name == name)
                 .map(|q| q.views.iter().copied().collect::<Vec<_>>())
         };
-        assert_eq!(views("Whamcloud"), Some(vec![ViewId::Gcp, ViewId::Nvidia]));
+        assert_eq!(
+            views("Whamcloud"),
+            Some(vec![ViewId::All, ViewId::Gcp, ViewId::Nvidia])
+        );
         assert_eq!(views("EX unscheduled"), Some(vec![ViewId::Exa6]));
         assert_eq!(views("EXA SD added"), Some(vec![ViewId::ExaSd]));
     }

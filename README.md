@@ -114,7 +114,9 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   (GCP on Whamcloud, and DDN/SFAFE tickets naming GCP or Google), all others.
   Each `customer_sources` entry lists its projects. `[TEST]` tickets are left
   out. A ticket and its copy in a mirror project (`mirror_projects`: NCP and
-  NP) are one row, with the more severe rating of the two.
+  NP) are one row, with the more severe rating of the two. The All view shows
+  the three groups together, judged by the same rules; its committed dates
+  are set in the GCP and NVIDIA views.
 - Idle time: days since the newest comment by a person (bots in
   `bot_authors`), or since creation when no person ever commented. It is read
   for every customer ticket and for the release items a rule needs it for,

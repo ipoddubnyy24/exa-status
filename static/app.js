@@ -347,8 +347,9 @@ function customerDates(v) {
         reason ? [". ", reason] : null),
       chip(g.verdict)));
   }
-  const source = v.editable_commitments
-    ? "Committed dates come from the local commitments file; set them in the Date column. Other dates are the release date of the linked EX fix; EXR fixes give no date."
+  const setIn = v.editable_commitments ? "the Date column" : datesSetIn(v);
+  const source = setIn
+    ? `Committed dates come from the local commitments file; set them in ${setIn}. Other dates are the release date of the linked EX fix; EXR fixes give no date.`
     : "Dates are the release date of the linked EX fix; EXR fixes give no date.";
   box.append(el("p", { class: "kpi-note" }, `${v.undated} tickets have no date. ${source}`));
   if (v.pm) {
@@ -356,6 +357,17 @@ function customerDates(v) {
       `: ${v.pm.status || "no status"}, target ${v.pm.target || "none"}, updated ${fmtDate(v.pm.updated)}`));
   }
   return box;
+}
+
+/** Where the committed dates of a view without the date editor are set: "the
+ * GCP and NVIDIA views" for All, named from the views that edit dates and
+ * share its tickets; "" when none does. */
+function datesSetIn(v) {
+  const keys = new Set(v.items.map((t) => t.key));
+  const labels = ui.snap.tabs.flatMap((t) => t.views)
+    .filter((x) => x.editable_commitments && x.items.some((t) => keys.has(t.key)))
+    .map((x) => x.label);
+  return labels.length ? `the ${labels.join(" and ")} view${labels.length > 1 ? "s" : ""}` : "";
 }
 
 function blockerList(id, list, shown) {

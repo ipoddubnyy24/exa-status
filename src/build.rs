@@ -72,10 +72,17 @@ pub(crate) fn snapshot(
         }
     }
     let gcp_pm = raw.pm_pages.get(&cfg.pm_pages.gcp).map(|p| p.info.clone());
+    // The groups' rows as they are, promises included; dates are set in the group views.
+    let all = [&others, &gcp, &nvidia]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
     let customer_tab = tab(
         "customers",
         "Customers",
         vec![
+            ctx.customer_view(ViewId::All, all, false),
             ctx.customer_view(ViewId::Others, others, false),
             View {
                 pm: gcp_pm,
@@ -125,6 +132,8 @@ pub(crate) fn watch_list(cfg: &Config, snap: &Snapshot) -> Vec<Watched> {
             .map(|b| &b.key)
             .collect();
         let watched_item = |t: &Ticket| match view.id {
+            // Each of its tickets is watched, or not, by its own group's view.
+            ViewId::All => false,
             ViewId::Gcp | ViewId::Nvidia => true,
             ViewId::Others => matches!(t.severity_level(), Some(1 | 2)),
             _ => blockers.contains(&t.key),
@@ -1037,6 +1046,7 @@ mod tests {
     use crate::rules::tests::{d, idle, ticket, today};
     use url::Url;
 
+    const ALL: ViewId = ViewId::All;
     const OTHERS: ViewId = ViewId::Others;
     const GCP: ViewId = ViewId::Gcp;
     const NVIDIA: ViewId = ViewId::Nvidia;
@@ -1337,6 +1347,79 @@ mod tests {
     }
 
     #[test]
+    fn the_all_view_shows_every_customer_row_as_its_group_does() {
+        let mut raw = raw();
+        // Due the same day as NVIDIA's NCP-163.
+        let mut due = idle(ticket("GCP-400", "Client crash"), 1);
+        (due.instance, due.source) = (Instance::Whamcloud, Some("Whamcloud".into()));
+        raw.customers.push(due);
+        raw.commitments
+            .insert("GCP-400".parse().unwrap(), commitment(d(2026, 11, 1)));
+
+        let snap = build(&raw);
+        let groups = [OTHERS, GCP, NVIDIA];
+        let rows: Vec<&Ticket> = groups
+            .iter()
+            .flat_map(|id| &view(&snap, *id).items)
+            .collect();
+        let due_nov_1 = |id: ViewId| {
+            view(&snap, id)
+                .date_groups
+                .iter()
+                .find(|g| g.date == d(2026, 11, 1))
+                .map(|g| g.keys.len())
+        };
+
+        assert_eq!(view(&snap, ALL).items.len(), rows.len());
+        for row in rows {
+            assert_eq!(item(&snap, ALL, row.key.as_str()), row);
+        }
+        assert_eq!(
+            (due_nov_1(ALL), due_nov_1(GCP), due_nov_1(NVIDIA)),
+            (Some(2), Some(1), Some(1)),
+            "one date group across the customers"
+        );
+        assert_eq!(
+            Some(view(&snap, ALL).verdict),
+            groups.iter().map(|id| view(&snap, *id).verdict).max()
+        );
+        assert!(
+            !view(&snap, ALL).editable_commitments,
+            "dates are set in the group views"
+        );
+        assert_eq!(
+            snap.tabs
+                .first()
+                .map(|t| t.views.iter().map(|v| v.id).collect::<Vec<_>>()),
+            Some(vec![ALL, OTHERS, GCP, NVIDIA])
+        );
+    }
+
+    #[test]
+    fn the_all_view_adds_nothing_to_the_watch_list() {
+        let cfg = Config::default();
+        let mut raw = raw();
+        // A blocker in All others that is not S1/S2, so that view does not watch it.
+        let mut blocker = idle(ticket("DDN-8000", "Mount hangs"), 1);
+        (blocker.priority, blocker.source) = (Some("Blocker".into()), Some("DDN".into()));
+        raw.customers.push(blocker);
+
+        let snap = build(&raw);
+
+        assert!(
+            view(&snap, ALL)
+                .blockers
+                .iter()
+                .any(|b| b.key.as_str() == "DDN-8000")
+        );
+        assert!(
+            watch_list(&cfg, &snap)
+                .iter()
+                .all(|w| w.key.as_str() != "DDN-8000")
+        );
+    }
+
+    #[test]
     fn only_ex_fixes_give_dates() {
         let snap = build(&raw());
         let fix = |id: ViewId, key: &str| {
@@ -1461,7 +1544,7 @@ mod tests {
     fn a_failed_customer_source_caps_the_verdict_and_says_so() {
         let mut raw = raw();
         raw.notes.push(Note::gap(
-            [GCP, NVIDIA],
+            [ALL, GCP, NVIDIA],
             "Whamcloud: not read (HTTP 503)".into(),
         ));
 
@@ -1481,8 +1564,14 @@ mod tests {
         );
         assert_eq!(
             capped(&snap),
-            [GCP, NVIDIA],
+            [ALL, GCP, NVIDIA],
             "views the source does not feed are not affected"
+        );
+        assert!(
+            view(&snap, ALL)
+                .notes
+                .iter()
+                .any(|n| n == "Whamcloud: not read (HTTP 503)")
         );
         assert!(!complete(&raw));
     }
@@ -1501,11 +1590,11 @@ mod tests {
     fn unread_committed_dates_cap_only_the_views_that_carry_them() {
         let mut raw = raw();
         raw.notes.push(Note::gap(
-            [GCP, NVIDIA],
+            [ALL, GCP, NVIDIA],
             "Committed dates not read: x".into(),
         ));
 
-        assert_eq!(capped(&build(&raw)), [GCP, NVIDIA]);
+        assert_eq!(capped(&build(&raw)), [ALL, GCP, NVIDIA]);
     }
 
     #[test]

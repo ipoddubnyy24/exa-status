@@ -639,17 +639,17 @@ impl Config {
     }
 
     /// The customer views a source's tickets can land in: a project that is
-    /// all NVIDIA's or all GCP's feeds that view; any other project feeds
-    /// every customer view, since its tickets are sorted by site and title.
+    /// all NVIDIA's or all GCP's feeds that view and All; any other project
+    /// feeds every customer view, since its tickets are sorted by site and title.
     pub(crate) fn source_views(&self, source: &CustomerSource) -> BTreeSet<ViewId> {
         source
             .projects
             .iter()
             .flat_map(|p| {
                 if self.nvidia_projects.contains(p) {
-                    vec![ViewId::Nvidia]
+                    vec![ViewId::All, ViewId::Nvidia]
                 } else if self.gcp_projects.contains(p) {
-                    vec![ViewId::Gcp]
+                    vec![ViewId::All, ViewId::Gcp]
                 } else {
                     ViewId::CUSTOMERS.to_vec()
                 }
@@ -825,8 +825,11 @@ mod tests {
             cfg.customer_sources.first().map(CustomerSource::jql),
             Some("project in (GCP, NVDCSE, NCP) AND statusCategory != Done".to_string())
         );
-        assert_eq!(views("Whamcloud"), [ViewId::Gcp, ViewId::Nvidia]);
-        assert_eq!(views("NP"), [ViewId::Nvidia]);
+        assert_eq!(
+            views("Whamcloud"),
+            [ViewId::All, ViewId::Gcp, ViewId::Nvidia]
+        );
+        assert_eq!(views("NP"), [ViewId::All, ViewId::Nvidia]);
         assert_eq!(views("DDN"), ViewId::CUSTOMERS);
     }
 

@@ -452,6 +452,27 @@ function filterChip(page) {
   return chip && chip.childNodes[0].textContent;
 }
 
+/** The note under the date groups that says where the dates come from. */
+const dateNote = (page) => page.document.querySelectorAll("#view p.kpi-note").map((p) => p.textContent).find((t) => t.includes("have no date"));
+
+/** `snapshot` with the Customers tab as the server builds it: All, then each
+ * group. GCP holds `gcp`, its tickets; NVIDIA is the sample's. */
+function withAllView(snapshot, gcp) {
+  const nvidia = nvidiaOf(snapshot);
+  const others = view("customers-others", "customers", { label: "All others", undated: 2, items: [ticket("DDN-3571"), ticket("DDN-6000")] });
+  const gcpView = view("customers-gcp", "customers", { label: "GCP", editable_commitments: true, undated: gcp.length, items: gcp });
+  const all = {
+    ...structuredClone(nvidia),
+    id: "customers-all",
+    label: "All",
+    editable_commitments: false,
+    undated: nvidia.undated + others.undated + gcpView.undated,
+    items: structuredClone([...nvidia.items, ...others.items, ...gcp]),
+  };
+  snapshot.tabs[0].views = [all, others, gcpView, nvidia];
+  return snapshot;
+}
+
 const NOV_1 = "3 tickets, due 1 Nov 2026";
 const NOV_1_AT_RISK = "2 not started or idle, due 1 Nov 2026";
 const ALL_ROWS = ["NCP-163", "NVDCSE-250", "NVDCSE-248", "NVDCSE-216", "NCP-9", "DDN-7162"];
@@ -692,4 +713,46 @@ test("a date saved in the editor is filed under the promise's key and shown at o
   assert.deepEqual(page.server.posted, [{ url: "/api/commitments", body: { key: "NP-131", date: "2026-11-20", note: "per QBR" } }]);
   assert.equal(cell(page, "NCP-163", "Date").textContent, "20 Nov 2026 committed on NP-131 Edit");
   assert.equal(flash(page), "Saved NP-131: 20 Nov 2026. Refreshing dates and verdicts.");
+});
+
+for (const [name, gcp, views] of [
+  ["GCP and NVIDIA", [ticket("GCP-315")], "the GCP and NVIDIA views"],
+  ["NVIDIA alone", [], "the NVIDIA view"],
+]) {
+  test(`All, with ${name} tickets, has no date editor and says where its committed dates are set`, async () => {
+    const page = await openPage(new FakeServer(withAllView(sampleSnapshot(), gcp)));
+
+    assert.equal(
+      dateNote(page),
+      `${3 + gcp.length} tickets have no date. Committed dates come from the local commitments file; set them in ${views}. Other dates are the release date of the linked EX fix; EXR fixes give no date.`,
+    );
+    assert.equal(cell(page, "NCP-163", "Date").querySelectorAll("button").length, 0);
+  });
+}
+
+test("the group views keep their date notes and editors beside All", async () => {
+  const page = await openPage(new FakeServer(withAllView(sampleSnapshot(), [ticket("GCP-315")])));
+
+  await press(page, "NVIDIA");
+
+  assert.match(dateNote(page), / have no date\. Committed dates come from the local commitments file; set them in the Date column\. Other dates/);
+  assert.equal(cell(page, "NCP-163", "Date").querySelectorAll("button").length, 1);
+
+  await press(page, "All others");
+
+  assert.equal(dateNote(page), "2 tickets have no date. Dates are the release date of the linked EX fix; EXR fixes give no date.");
+});
+
+test("a date saved in a group view shows at once in All", async () => {
+  const page = await openPage(new FakeServer(withAllView(sampleSnapshot(), [])));
+  await press(page, "NVIDIA");
+  cell(page, "NCP-163", "Date").querySelector("button").click();
+  const date = cell(page, "NCP-163", "Date").querySelector('input[type="date"]');
+  date.value = "2026-11-20";
+  date.dispatch("input");
+  await press(page, "Save");
+
+  await press(page, "All");
+
+  assert.equal(cell(page, "NCP-163", "Date").textContent.trim(), "20 Nov 2026 committed on NP-131");
 });
