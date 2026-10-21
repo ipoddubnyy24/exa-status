@@ -246,6 +246,8 @@ function renderView(v) {
   if (v.kind === "initiatives") root.append(section("On track for the proposed dates?", initiativeCards(v.initiatives)));
   if (v.kind !== "initiatives") root.append(section("Immediate blockers", blockerList(v.id, v.blockers, BLOCKERS_SHOWN)));
   root.append(section(`All ${v.items.length} items`, itemTable(v), ITEMS_ID));
+  const tests = v.tests?.length;
+  if (tests) root.append(section(`${tests} Test item${tests > 1 ? "s" : ""}`, itemTable(v, v.tests, `${v.id}:tests`, "Filter Test items")));
   return root;
 }
 
@@ -587,15 +589,17 @@ function clearFilter(v) {
   say(`Showing every ${kind}.`);
 }
 
-function itemTable(v) {
+/** A table of `items`, the view's own unless given, with the search, sort and
+ * filter kept under `stateId`. */
+function itemTable(v, items = v.items, stateId = v.id, searchLabel = "Filter items") {
   const cols = columns(v);
-  const st = tableState(v.id);
+  const st = tableState(stateId);
   const tbody = el("tbody", {});
   const head = el("tr", {});
   const count = el("span", { class: "muted" });
   const draw = () => {
     const q = st.q.trim().toLowerCase();
-    let rows = v.items;
+    let rows = items;
     if (st.only) {
       const keys = filterKeys(v, st.only);
       rows = rows.filter((t) => keys.has(t.key));
@@ -615,10 +619,10 @@ function itemTable(v) {
       th.className = i === st.col ? `sorted${st.asc ? " asc" : ""}` : "";
       th.setAttribute("aria-sort", i === st.col ? (st.asc ? "ascending" : "descending") : "none");
     });
-    count.textContent = q || st.only ? `${rows.length} of ${v.items.length} shown` : "";
+    count.textContent = q || st.only ? `${rows.length} of ${items.length} shown` : "";
   };
   cols.forEach((c, i) => head.append(el("th", { scope: "col", tabindex: "0", onclick: () => { st.asc = st.col === i ? !st.asc : true; st.col = i; draw(); }, onkeydown: (e) => { if (e.key === "Enter") e.target.click(); } }, c.label)));
-  const input = el("input", { type: "search", placeholder: "Filter by key, words, status, owner", value: st.q, "aria-label": "Filter items", oninput: (e) => { st.q = e.target.value; draw(); } });
+  const input = el("input", { type: "search", placeholder: "Filter by key, words, status, owner", value: st.q, "aria-label": searchLabel, oninput: (e) => { st.q = e.target.value; draw(); } });
   const filterChip = st.only
     ? el("span", { class: "filter-chip" },
       filterLabel(v, st.only),

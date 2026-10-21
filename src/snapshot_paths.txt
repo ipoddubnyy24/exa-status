@@ -1,4 +1,4 @@
-format 7
+format 8
 .duration_secs
 .format
 .generated_at
@@ -147,6 +147,31 @@ format 7
 .tabs[].views[].pm.updated
 .tabs[].views[].pm.url
 .tabs[].views[].summary
+.tabs[].views[].tests
+.tabs[].views[].tests[].also
+.tabs[].views[].tests[].assignee
+.tabs[].views[].tests[].category
+.tabs[].views[].tests[].committed
+.tabs[].views[].tests[].created
+.tabs[].views[].tests[].due
+.tabs[].views[].tests[].fix
+.tabs[].views[].tests[].fix_state
+.tabs[].views[].tests[].fix_versions
+.tabs[].views[].tests[].idle_days
+.tabs[].views[].tests[].instance
+.tabs[].views[].tests[].issue_type
+.tabs[].views[].tests[].key
+.tabs[].views[].tests[].last_comment
+.tabs[].views[].tests[].links
+.tabs[].views[].tests[].patches
+.tabs[].views[].tests[].priority
+.tabs[].views[].tests[].severity
+.tabs[].views[].tests[].site
+.tabs[].views[].tests[].source
+.tabs[].views[].tests[].status
+.tabs[].views[].tests[].summary
+.tabs[].views[].tests[].updated
+.tabs[].views[].tests[].url
 .tabs[].views[].tracks
 .tabs[].views[].tracks[].closed_per_week
 .tabs[].views[].tracks[].gap_days

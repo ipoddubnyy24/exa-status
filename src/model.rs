@@ -11,7 +11,7 @@ use url::Url;
 /// Version of the snapshot layout. The server serves a snapshot only when it
 /// matches, so a server built before a layout change never feeds its embedded
 /// page a snapshot written by a newer worker.
-pub(crate) const SNAPSHOT_FORMAT: u32 = 7;
+pub(crate) const SNAPSHOT_FORMAT: u32 = 8;
 
 /// A view (sub-tab). Notes name the views they concern, and the UI keeps the
 /// selected one across refreshes by its id.
@@ -699,8 +699,10 @@ pub(crate) struct View {
     pub(crate) undated: usize,
     /// Blockers, most urgent first.
     pub(crate) blockers: Vec<Blocker>,
-    /// Every item in the view.
+    /// Every item in the view but Test items.
     pub(crate) items: Vec<Ticket>,
+    /// Test items (issue type Test), listed apart from the work.
+    pub(crate) tests: Vec<Ticket>,
     /// Warnings about missing or partial data.
     pub(crate) notes: Vec<String>,
     /// PM status page shown for context.

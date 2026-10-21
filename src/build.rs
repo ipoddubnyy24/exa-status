@@ -550,6 +550,7 @@ impl<'a> Context<'a> {
             date_groups: groups,
             blockers,
             items,
+            tests: Vec::new(),
             notes,
             pm: None,
             health: None,
@@ -860,6 +861,8 @@ impl<'a> Context<'a> {
                 .cmp(&rules::priority_rank(b))
                 .then(a.key.cmp(&b.key))
         });
+        let (test_items, work_items): (Vec<Ticket>, Vec<Ticket>) =
+            sorted.into_iter().partition(rules::is_test_case);
         View {
             id,
             label: id.label().into(),
@@ -902,7 +905,8 @@ impl<'a> Context<'a> {
             date_groups: Vec::new(),
             undated: 0,
             blockers,
-            items: sorted,
+            items: work_items,
+            tests: test_items,
             notes: Vec::new(),
             pm: None,
             health: None,
@@ -1020,6 +1024,7 @@ impl<'a> Context<'a> {
             undated: 0,
             blockers: Vec::new(),
             items,
+            tests: Vec::new(),
             notes,
             pm: None,
             health: None,
@@ -1790,26 +1795,42 @@ mod tests {
     }
 
     #[test]
-    fn exa_sd_open_scope_leaves_out_test_items_and_says_how_many() {
+    fn exa_sd_lists_test_items_apart_and_leaves_them_out_of_open_scope() {
         let mut raw = raw();
         let scope = |raw: &RawData| {
             let snap = build(raw);
             let v = view(&snap, EXA_SD);
             let open = v.kpis.first().unwrap();
-            (open.value.clone(), open.note.clone(), v.items.len())
+            let keys = |list: &[Ticket]| list.iter().map(|t| t.key.to_string()).collect::<Vec<_>>();
+            (
+                open.value.clone(),
+                open.note.clone(),
+                keys(&v.items),
+                keys(&v.tests),
+            )
         };
 
         assert_eq!(
             scope(&raw),
-            ("1".to_string(), "1 is a Test item".to_string(), 2),
-            "the table still lists the Test item"
+            (
+                "1".to_string(),
+                "1 is a Test item".to_string(),
+                vec!["EXM-1".to_string()],
+                vec!["EXM-9".to_string()]
+            )
         );
         let mut test = in_version("EXM-10", "NVMesh-P2", "New", Category::New);
         test.issue_type = "Test".into();
         raw.sd_open.push(test);
         assert_eq!(
             scope(&raw),
-            ("1".to_string(), "2 are Test items".to_string(), 3)
+            (
+                "1".to_string(),
+                "2 are Test items".to_string(),
+                vec!["EXM-1".to_string()],
+                vec!["EXM-9".to_string(), "EXM-10".to_string()]
+            ),
+            "Test items sort as the work does: Blocker priority first"
         );
     }
 

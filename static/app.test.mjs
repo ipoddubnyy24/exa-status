@@ -292,6 +292,7 @@ function view(id, kind, fields) {
     undated: 0,
     blockers: [],
     items: [],
+    tests: [],
     notes: [],
     pm: null,
     health: null,
@@ -846,4 +847,33 @@ test("a source filter is dropped when a newer snapshot has no ticket from that s
   assert.deepEqual(rows(page), ALL_ROWS.filter((key) => key !== "DDN-7162"));
   assert.equal(filterChip(page), null);
   assert.equal(flash(page), "No ticket comes from DDN any more; showing every source.");
+});
+
+/** The section titles of the view shown. */
+const sections = (page) => page.document.querySelectorAll("#view section h2").map((h) => h.textContent);
+
+/** The keys of the rows in the section titled `title`, top to bottom. */
+function sectionRows(page, title) {
+  const found = page.document.querySelectorAll("#view section").find((s) => s.querySelector("h2").textContent === title);
+  return found.querySelectorAll("tbody tr").map((row) => row.querySelector("a").textContent);
+}
+
+test("a release view lists its Test items in a table of their own, below the other items", async () => {
+  const snap = sampleSnapshot();
+  exa7Of(snap).tests = ["EX-17001", "EX-17000"].map((key) => ticket(key, { issue_type: "Test", fix_versions: ["7.0.0"] }));
+  const page = await openPage(new FakeServer(snap));
+  assert.ok(!sections(page).some((title) => title.includes("Test item")), "a view without Test items has no such table");
+
+  await press(page, "Development");
+
+  assert.deepEqual(sections(page).slice(-2), ["All 3 items", "2 Test items"]);
+  assert.deepEqual(rows(page), ["EX-15181", "EX-16104", "EX-15711"]);
+  assert.deepEqual(sectionRows(page, "2 Test items"), ["EX-17001", "EX-17000"]);
+
+  const search = page.document.querySelectorAll('input[type="search"]').find((i) => i.getAttribute("aria-label") === "Filter Test items");
+  search.value = "17000";
+  search.dispatch("input");
+
+  assert.deepEqual(sectionRows(page, "2 Test items"), ["EX-17000"]);
+  assert.deepEqual(rows(page), ["EX-15181", "EX-16104", "EX-15711"], "each table searches on its own");
 });

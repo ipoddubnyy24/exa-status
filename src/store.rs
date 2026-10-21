@@ -96,15 +96,18 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     write_atomic(path, &serde_json::to_vec(value)?)
 }
 
-/// One history line: per view, open items and blockers (cards included).
-/// `partial` marks a refresh in which a source failed or, with `gaps`, data
-/// a verdict depends on was missing.
+/// One history line: per view, open items (Test items included) and
+/// blockers (cards included). `partial` marks a refresh in which a source
+/// failed or, with `gaps`, data a verdict depends on was missing.
 pub(crate) fn history_line(snap: &Snapshot, gaps: bool) -> serde_json::Value {
     let views: BTreeMap<&str, (usize, usize)> = snap
         .tabs
         .iter()
         .flat_map(|t| &t.views)
-        .map(|v| (v.id.as_str(), (v.items.len(), v.blocker_count())))
+        .map(|v| {
+            let open = v.items.len() + v.tests.len();
+            (v.id.as_str(), (open, v.blocker_count()))
+        })
         .collect();
     let partial = gaps || snap.sources.iter().any(|s| s.error.is_some());
     serde_json::json!({
@@ -230,10 +233,11 @@ mod tests {
 
     fn snapshot(source_error: Option<&str>) -> Snapshot {
         use crate::model::{Tab, Verdict, View, ViewId, ViewKind};
+        use crate::rules::tests::ticket;
         let view = View {
-            id: ViewId::Gcp,
-            label: "GCP".into(),
-            kind: ViewKind::Customers,
+            id: ViewId::ExaSd,
+            label: "EXA SD".into(),
+            kind: ViewKind::Release,
             verdict: Verdict::OnTrack,
             summary: String::new(),
             kpis: vec![],
@@ -241,12 +245,13 @@ mod tests {
             date_groups: vec![],
             undated: 0,
             blockers: vec![],
-            items: vec![],
+            items: vec![ticket("EXM-1", "work")],
+            tests: vec![ticket("EXM-9", "test")],
             notes: vec![],
             pm: None,
             health: None,
             initiatives: vec![],
-            editable_commitments: true,
+            editable_commitments: false,
         };
         Snapshot {
             format: crate::model::SNAPSHOT_FORMAT,
@@ -258,8 +263,8 @@ mod tests {
                 error: source_error.map(String::from),
             }],
             tabs: vec![Tab {
-                id: "customers".into(),
-                label: "Customers".into(),
+                id: "development".into(),
+                label: "Development".into(),
                 verdict: Verdict::OnTrack,
                 views: vec![view],
             }],
@@ -272,7 +277,11 @@ mod tests {
 
         assert_eq!(line["format"], HISTORY_FORMAT);
         assert_eq!(line["partial"], false);
-        assert_eq!(line["views"], serde_json::json!({"customers-gcp": [0, 0]}));
+        assert_eq!(
+            line["views"],
+            serde_json::json!({"dev-exa-sd": [2, 0]}),
+            "Test items count as open"
+        );
         assert_eq!(history_line(&snapshot(None), true)["partial"], true);
         assert_eq!(
             history_line(&snapshot(Some("timed out")), false)["partial"],

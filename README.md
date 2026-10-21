@@ -154,4 +154,6 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   "Fix delivered" means every linked fix, EX or EXR, was read and is done;
   once a fix is under way, an open customer ticket no longer counts as "not
   started" in its date group.
-- Test cases (issue type Test) are not counted as release blockers.
+- Test cases (issue type Test) are not counted as release blockers or in
+  EXA SD's open scope. A release view lists them in a table of their own,
+  below the other items.
