@@ -6,6 +6,8 @@
   --muted: #6b6a66;
   --border: rgba(0, 0, 0, 0.1);
   --accent: #185fa5;
+  /* Text on an accent background: 6.4:1 on the light accent. */
+  --on-accent: #ffffff;
   --ok-bg: #eaf3de;
   --ok: #27500a;
   --warn-bg: #faeeda;
@@ -30,6 +32,8 @@
     --muted: #a3a29c;
     --border: rgba(255, 255, 255, 0.12);
     --accent: #85b7eb;
+    /* 8:1 on the dark accent. */
+    --on-accent: #0f1e2e;
     --ok-bg: #173404;
     --ok: #c0dd97;
     --warn-bg: #412402;
@@ -77,11 +81,13 @@ button {
 button:hover { background: var(--surface-2); }
 
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
-.tab { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 12px; font-size: 15px; color: var(--muted); }
-.tab.active { color: var(--text); border-bottom-color: var(--text); font-weight: 600; }
+.tab { border: none; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 8px 12px; font-size: 15px; color: var(--muted); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 .subtabs { display: flex; gap: 8px; padding-top: 12px; padding-bottom: 4px; flex-wrap: wrap; }
 .subtab { border-radius: 999px; padding: 3px 12px; color: var(--muted); background: transparent; }
-.subtab.active { background: var(--surface); color: var(--text); font-weight: 600; }
+.subtab.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+/* A ring keeps the verdict dot readable on the accent background. */
+.subtab.active .dot { box-shadow: 0 0 0 2px var(--on-accent); }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 7px; vertical-align: 1px; }
 .dot.ok { background: var(--dot-ok); }
