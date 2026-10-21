@@ -9,6 +9,8 @@ const VERDICT = {
 };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const BLOCKERS_SHOWN = 10;
+/** The id of the "All items" section, which the date filters scroll to. */
+const ITEMS_ID = "items";
 const CARD_BLOCKERS_SHOWN = 5;
 const POLL_REFRESHING_MS = 3000;
 const POLL_IDLE_MS = 60000;
@@ -29,6 +31,8 @@ const ui = {
   // A snapshot arrived while the editor was open; render once it closes.
   stale: false,
   expanded: new Set(),
+  // Per view: text filter, sort, and `only` ({ date, atRisk }), which limits
+  // the table to one date group, or to the tickets putting it at risk.
   tables: {},
 };
 
@@ -227,11 +231,12 @@ function render() {
   view.append(renderView(v));
 }
 
-function section(title, body) {
-  return el("section", {}, el("h2", {}, title), body);
+function section(title, body, id) {
+  return el("section", { id }, el("h2", {}, title), body);
 }
 
 function renderView(v) {
+  dropVanishedFilter(v);
   const root = el("div", {});
   root.append(el("div", { class: "headline" }, chip(v.verdict), el("span", {}, v.summary)));
   for (const n of v.notes) root.append(el("p", { class: "note" }, n));
@@ -240,7 +245,7 @@ function renderView(v) {
   if (v.kind === "release") root.append(section("On track for the proposed dates?", tracks(v.tracks)));
   if (v.kind === "initiatives") root.append(section("On track for the proposed dates?", initiativeCards(v.initiatives)));
   if (v.kind !== "initiatives") root.append(section("Immediate blockers", blockerList(v.id, v.blockers, BLOCKERS_SHOWN)));
-  root.append(section(`All ${v.items.length} items`, itemTable(v)));
+  root.append(section(`All ${v.items.length} items`, itemTable(v), ITEMS_ID));
   return root;
 }
 
@@ -313,12 +318,33 @@ function initiativeCards(cards) {
 function customerDates(v) {
   const box = el("div", { class: "track" });
   if (!v.date_groups.length) box.append(el("p", { class: "muted" }, "No ticket in this view has a date yet."));
+  const shown = tableState(v.id).only;
   for (const g of v.date_groups) {
     const left = g.days_left >= 0 ? `${g.days_left} days left` : `${-g.days_left} days ago`;
     const statuses = g.by_status.map((s) => `${s.count} ${s.status}`).join(", ");
     const n = g.keys.length;
+    // The ticket count, and the count of tickets putting the group at risk,
+    // limit the table to them; pressing the same one again lifts the limit.
+    const groupToggle = ({ atRisk, text }) => {
+      const only = { date: g.date, atRisk };
+      const on = sameFilter(shown, only);
+      return el("button", {
+        type: "button",
+        class: "link-button",
+        "aria-pressed": on ? "true" : "false",
+        "aria-label": `${text}, due ${fmtDate(g.date)}`,
+        "data-filter": filterId(only),
+        title: on ? "Remove this date filter" : "Show only these tickets in the table below",
+        onclick: () => toggleGroup(v, only),
+      }, text);
+    };
+    const reason = g.reason && g.stalled.length ? groupToggle({ atRisk: true, text: g.reason }) : g.reason;
     box.append(el("div", { class: "group" },
-      el("span", {}, el("strong", {}, `${fmtDate(g.date)}, ${left}: `), `${n} ticket${n > 1 ? "s" : ""}, ${statuses}${g.reason ? `. ${g.reason}` : ""}`),
+      el("span", {},
+        el("strong", {}, `${fmtDate(g.date)}, ${left}: `),
+        groupToggle({ atRisk: false, text: `${n} ticket${n > 1 ? "s" : ""}` }),
+        `, ${statuses}`,
+        reason ? [". ", reason] : null),
       chip(g.verdict)));
   }
   const source = v.editable_commitments
@@ -471,15 +497,80 @@ function columns(v) {
   ];
 }
 
+/** A view's table state, made on first use. */
+function tableState(id) {
+  return ui.tables[id] || (ui.tables[id] = { q: "", col: -1, asc: true, only: null });
+}
+
+/** Both date filters name the same date and the same subset. */
+const sameFilter = (a, b) => Boolean(a && b && a.date === b.date && a.atRisk === b.atRisk);
+/** Finds a date filter's toggle again after a render. */
+const filterId = (only) => `${only.date}:${only.atRisk}`;
+/** The date group a filter names, if the snapshot still has it. */
+const groupOf = (v, only) => v.date_groups.find((g) => g.date === only.date);
+
+/** The keys a date filter shows: the group's tickets, or those putting it at risk. */
+function filterKeys(v, only) {
+  const g = groupOf(v, only);
+  return new Set(g ? (only.atRisk ? g.stalled : g.keys) : []);
+}
+
+/** "Due 1 Nov 2026", or "Due 1 Nov 2026, 13 not started or idle", from the group as it is now. */
+function filterLabel(v, only) {
+  const g = groupOf(v, only);
+  return `Due ${fmtDate(only.date)}${only.atRisk && g && g.reason ? `, ${g.reason}` : ""}`;
+}
+
+/** Lifts a date filter that the latest snapshot leaves empty (its date
+ * passed, its tickets were re-dated, or the group is no longer at risk),
+ * so the table never reads as empty when the tickets still exist. */
+function dropVanishedFilter(v) {
+  const st = tableState(v.id);
+  if (st.only && !filterKeys(v, st.only).size) {
+    say(`No ticket matches the ${fmtDate(st.only.date)} date filter any more; showing every date.`);
+    st.only = null;
+  }
+}
+
+/** Limits the table to one date group, or to the tickets putting it at
+ * risk, or lifts the limit when the same filter is pressed again. An open
+ * date editor closes, as on a view switch. Focus moves to what changed. */
+function toggleGroup(v, only) {
+  const st = tableState(v.id);
+  st.only = sameFilter(st.only, only) ? null : only;
+  closeEditor();
+  if (st.only) {
+    $(ITEMS_ID)?.scrollIntoView({ block: "start" });
+    document.querySelector(`#${ITEMS_ID} .filter-chip button`)?.focus({ preventScroll: true });
+    const shown = document.querySelectorAll(`#${ITEMS_ID} tbody tr`).length;
+    say(`${filterLabel(v, st.only)}: ${shown} of ${v.items.length} tickets shown.`);
+  } else {
+    document.querySelector(`[data-filter="${filterId(only)}"]`)?.focus();
+    say("Showing every date.");
+  }
+}
+
+/** Lifts the date filter from its chip; focus goes to the search box beside it. */
+function clearDateFilter(v) {
+  tableState(v.id).only = null;
+  closeEditor();
+  document.querySelector(`#${ITEMS_ID} input[type="search"]`)?.focus();
+  say("Showing every date.");
+}
+
 function itemTable(v) {
   const cols = columns(v);
-  const st = ui.tables[v.id] || (ui.tables[v.id] = { q: "", col: -1, asc: true });
+  const st = tableState(v.id);
   const tbody = el("tbody", {});
   const head = el("tr", {});
   const count = el("span", { class: "muted" });
   const draw = () => {
     const q = st.q.trim().toLowerCase();
     let rows = v.items;
+    if (st.only) {
+      const keys = filterKeys(v, st.only);
+      rows = rows.filter((t) => keys.has(t.key));
+    }
     if (q) rows = rows.filter((t) => [t.key, t.summary, t.status, t.assignee || "", t.source || "", ...(t.also || []), ...(t.fix_versions || [])].join(" ").toLowerCase().includes(q));
     if (st.col >= 0) {
       const key = cols[st.col].sort;
@@ -495,13 +586,18 @@ function itemTable(v) {
       th.className = i === st.col ? `sorted${st.asc ? " asc" : ""}` : "";
       th.setAttribute("aria-sort", i === st.col ? (st.asc ? "ascending" : "descending") : "none");
     });
-    count.textContent = q ? `${rows.length} of ${v.items.length} shown` : "";
+    count.textContent = q || st.only ? `${rows.length} of ${v.items.length} shown` : "";
   };
   cols.forEach((c, i) => head.append(el("th", { scope: "col", tabindex: "0", onclick: () => { st.asc = st.col === i ? !st.asc : true; st.col = i; draw(); }, onkeydown: (e) => { if (e.key === "Enter") e.target.click(); } }, c.label)));
   const input = el("input", { type: "search", placeholder: "Filter by key, words, status, owner", value: st.q, "aria-label": "Filter items", oninput: (e) => { st.q = e.target.value; draw(); } });
+  const filterChip = st.only
+    ? el("span", { class: "filter-chip" },
+      filterLabel(v, st.only),
+      el("button", { type: "button", onclick: () => clearDateFilter(v) }, "Clear date filter"))
+    : null;
   draw();
   return el("div", {},
-    el("div", { class: "table-tools" }, input, count),
+    el("div", { class: "table-tools" }, input, filterChip, count),
     el("div", { class: "table-wrap" }, el("table", {}, el("thead", {}, head), tbody)));
 }
 

@@ -11,7 +11,7 @@ use url::Url;
 /// Version of the snapshot layout. The server serves a snapshot only when it
 /// matches, so a server built before a layout change never feeds its embedded
 /// page a snapshot written by a newer worker.
-pub(crate) const SNAPSHOT_FORMAT: u32 = 5;
+pub(crate) const SNAPSHOT_FORMAT: u32 = 6;
 
 /// A view (sub-tab). Notes name the views they concern, and the UI keeps the
 /// selected one across refreshes by its id.
@@ -550,6 +550,10 @@ pub(crate) struct DateGroup {
     pub(crate) verdict: Verdict,
     /// Why, when not on track.
     pub(crate) reason: Option<String>,
+    /// The tickets `reason` counts when the group is at risk: not started,
+    /// or idle over `idle_alert_days` (unknown counts). Empty when on or off
+    /// track.
+    pub(crate) stalled: Vec<IssueKey>,
 }
 
 /// One entry in a blocker list.

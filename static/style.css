@@ -127,6 +127,8 @@ h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacin
 .reason.flag { color: var(--warn); }
 .group { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
 .group:last-of-type { border-bottom: none; }
+.group .link-button { font-size: inherit; padding: 0; }
+.link-button[aria-pressed="true"] { font-weight: 600; text-decoration: underline; }
 
 .blockers { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px 14px; }
 .brow { display: grid; grid-template-columns: 110px minmax(0, 1fr) 170px 170px; gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -152,7 +154,9 @@ h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacin
 .patches a.chip:hover { text-decoration: none; filter: brightness(0.95); }
 th:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-.table-tools { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.table-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
+.filter-chip { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 1px 3px 1px 10px; }
+.filter-chip button { font-size: 12px; padding: 0 8px; border-radius: 999px; }
 .table-tools input { font: inherit; padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); width: 280px; }
 .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }

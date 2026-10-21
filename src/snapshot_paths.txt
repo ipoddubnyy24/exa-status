@@ -1,4 +1,4 @@
-format 5
+format 6
 .duration_secs
 .format
 .generated_at
@@ -25,6 +25,7 @@ format 5
 .tabs[].views[].date_groups[].days_left
 .tabs[].views[].date_groups[].keys
 .tabs[].views[].date_groups[].reason
+.tabs[].views[].date_groups[].stalled
 .tabs[].views[].date_groups[].verdict
 .tabs[].views[].editable_commitments
 .tabs[].views[].health

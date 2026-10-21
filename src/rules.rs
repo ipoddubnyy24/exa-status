@@ -425,25 +425,30 @@ pub(crate) fn date_groups(cfg: &Config, today: NaiveDate, tickets: &[&Ticket]) -
         .into_iter()
         .map(|(date, group)| {
             let days_left = (date - today).num_days();
-            let stalled = group
-                .iter()
-                .filter(|t| {
-                    // Work on a linked fix counts as started, whatever the
-                    // customer ticket's own status says.
-                    let not_started = t.category == Category::New
-                        && matches!(t.fix_state, FixState::NoFix | FixState::NotStarted);
-                    not_started || idle_over(t, cfg.idle_alert_days)
-                })
-                .count();
+            // Only a group inside the risk window can be at risk; its
+            // stalled tickets are the reason.
+            let stalled: Vec<IssueKey> = if (0..=cfg.risk_window_days).contains(&days_left) {
+                group
+                    .iter()
+                    .filter(|t| {
+                        // Work on a linked fix counts as started, whatever the
+                        // customer ticket's own status says.
+                        let not_started = t.category == Category::New
+                            && matches!(t.fix_state, FixState::NoFix | FixState::NotStarted);
+                        not_started || idle_over(t, cfg.idle_alert_days)
+                    })
+                    .map(|t| t.key.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let (verdict, reason) = if days_left < 0 {
                 (Verdict::OffTrack, Some("Date passed".to_string()))
-            } else if days_left <= cfg.risk_window_days && stalled > 0 {
-                (
-                    Verdict::AtRisk,
-                    Some(format!("{stalled} not started or idle")),
-                )
-            } else {
+            } else if stalled.is_empty() {
                 (Verdict::OnTrack, None)
+            } else {
+                let n = stalled.len();
+                (Verdict::AtRisk, Some(format!("{n} not started or idle")))
             };
             let mut status: BTreeMap<&str, usize> = BTreeMap::new();
             for t in &group {
@@ -462,6 +467,7 @@ pub(crate) fn date_groups(cfg: &Config, today: NaiveDate, tickets: &[&Ticket]) -
                     .collect(),
                 verdict,
                 reason,
+                stalled,
             }
         })
         .collect()
@@ -1120,7 +1126,7 @@ pub(crate) mod tests {
         let mut soon = idle(ticket("NVDCSE-1", "a"), 1);
         soon.committed = Some(committed("NVDCSE-1", d(2026, 11, 1)));
         let mut soon_moving = idle(ticket("NVDCSE-4", "d"), 1);
-        soon_moving.committed = Some(committed("NVDCSE-4", d(2026, 11, 2)));
+        soon_moving.committed = Some(committed("NVDCSE-4", d(2026, 11, 1)));
         soon_moving.category = Category::Indeterminate;
         let mut soon_unknown = ticket("NVDCSE-5", "e");
         soon_unknown.committed = Some(committed("NVDCSE-5", d(2026, 11, 3)));
@@ -1173,12 +1179,28 @@ pub(crate) mod tests {
                 (d(2027, 1, 31), 102, Verdict::OnTrack, None),
             ]
         );
+        let stalled: Vec<Vec<&str>> = groups
+            .iter()
+            .map(|g| g.stalled.iter().map(IssueKey::as_str).collect())
+            .collect();
+        assert_eq!(
+            stalled,
+            [vec![], vec!["NVDCSE-1"], vec![], vec!["NVDCSE-5"], vec![]],
+            "only the tickets that put a group at risk are listed"
+        );
         assert_eq!(
             groups.get(1).map(|g| g.by_status.clone()),
             Some(vec![StatusCount {
                 status: "Open".into(),
-                count: 1
+                count: 2
             }])
+        );
+        assert_eq!(
+            groups
+                .get(1)
+                .map(|g| g.keys.iter().map(IssueKey::as_str).collect::<Vec<_>>()),
+            Some(vec!["NVDCSE-1", "NVDCSE-4"]),
+            "the started ticket is in the group but not among the stalled ones"
         );
     }
 
