@@ -95,6 +95,17 @@ workbook to `commitments.json`; stop the dashboard while it runs. Its tests:
 /usr/bin/python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
+## Page tests
+
+`static/app.test.mjs` loads `static/app.js` unchanged into a fake DOM, with
+a fake server behind it, and drives the page as a person would: date
+filters, the date editor, sorting, saved dates. It needs Node and nothing
+installed:
+
+```bash
+node --test static/
+```
+
 ## Rules
 
 Defined in `src/rules.rs` and tuned in `config.local.json`:
