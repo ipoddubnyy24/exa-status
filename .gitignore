@@ -1,0 +1,6 @@
+/target
+/data
+/certs
+*.pem
+config.local.json
+commitments.json

@@ -1,0 +1,34 @@
+[package]
+name = "exa-status"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
+base64 = "0.22"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+dotenvy = "0.15.7"
+quick-xml = { version = "0.42", features = ["escape-html"] }
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+regex = "1.13.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1.0.229", features = ["derive"] }
+# preserve_order: saving the refresh interval keeps config.local.json's key order.
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+tempfile = "3.27"
+tokio = { version = "1.54.0", features = ["rt", "time", "process", "fs", "sync", "signal"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+ureq = "2"
+url = { version = "2.5.8", features = ["serde"] }
+# Reads the expiry date of the dashboard certificate.
+x509-parser = "0.18"
+
+[dev-dependencies]
+test-case = "3.4.0"
+tokio = { version = "1.54.0", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
