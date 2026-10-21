@@ -11,8 +11,8 @@ use crate::fetch::{self, InitiativeData, KeysByVersion, Patches, RawData, Watche
 use crate::jira::Version;
 use crate::model::{
     BuildHealth, Category, Committed, EpicRef, FixRef, FixState, InitiativeCard, IssueKey, Kpi,
-    SNAPSHOT_FORMAT, Severity, Snapshot, SourceStatus, Tab, Ticket, Tone, Track, Verdict, View,
-    ViewId, ViewKind,
+    SNAPSHOT_FORMAT, Severity, Snapshot, SourceCount, SourceStatus, Tab, Ticket, Tone, Track,
+    Verdict, View, ViewId, ViewKind,
 };
 use crate::rules::{self, BLOCKER, Bucket, CRITICAL, Classifier, TrackInput};
 
@@ -198,6 +198,7 @@ fn kpi(label: &str, value: String, note: String, tone: Option<Tone>) -> Kpi {
         value,
         note,
         tone,
+        by_source: Vec::new(),
     }
 }
 
@@ -380,9 +381,16 @@ impl<'a> Context<'a> {
                 .entry(t.source.as_deref().unwrap_or("other"))
                 .or_default() += 1;
         }
+        let by_source: Vec<SourceCount> = by_source
+            .into_iter()
+            .map(|(source, count)| SourceCount {
+                source: source.into(),
+                count,
+            })
+            .collect();
         let source_note = by_source
             .iter()
-            .map(|(s, n)| format!("{s} {n}"))
+            .map(|SourceCount { source, count }| format!("{source} {count}"))
             .collect::<Vec<_>>()
             .join(", ");
         let s1 = refs
@@ -508,7 +516,10 @@ impl<'a> Context<'a> {
             verdict: date_verdict.max(idle.verdict),
             summary,
             kpis: vec![
-                kpi("Open", open.to_string(), source_note, None),
+                Kpi {
+                    by_source,
+                    ..kpi("Open", open.to_string(), source_note, None)
+                },
                 kpi(
                     "S1 / S2",
                     format!("{s1} / {s2}"),
@@ -1393,6 +1404,43 @@ mod tests {
                 .map(|t| t.views.iter().map(|v| v.id).collect::<Vec<_>>()),
             Some(vec![ALL, OTHERS, GCP, NVIDIA])
         );
+    }
+
+    #[test]
+    fn the_open_tile_counts_tickets_by_source_for_the_page_to_filter() {
+        let snap = build(&raw());
+        let by_source = |id: ViewId| {
+            view(&snap, id)
+                .kpis
+                .iter()
+                .filter(|k| !k.by_source.is_empty())
+                .map(|k| {
+                    let counts = k
+                        .by_source
+                        .iter()
+                        .map(|s| format!("{} {}", s.source, s.count));
+                    (
+                        k.label.as_str(),
+                        k.note.as_str(),
+                        counts.collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            by_source(ALL),
+            [(
+                "Open",
+                "DDN 6, Whamcloud 2",
+                vec!["DDN 6".to_string(), "Whamcloud 2".to_string()]
+            )]
+        );
+        assert_eq!(
+            by_source(OTHERS),
+            [("Open", "DDN 5", vec!["DDN 5".to_string()])]
+        );
+        assert_eq!(by_source(EXA6), [], "release tiles have no sources");
     }
 
     #[test]

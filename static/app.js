@@ -240,7 +240,7 @@ function renderView(v) {
   const root = el("div", {});
   root.append(el("div", { class: "headline" }, chip(v.verdict), el("span", {}, v.summary)));
   for (const n of v.notes) root.append(el("p", { class: "note" }, n));
-  root.append(section("Where we are", el("div", { class: "kpis" }, kpis(v.kpis), v.health ? health(v.health) : null)));
+  root.append(section("Where we are", el("div", { class: "kpis" }, kpis(v), v.health ? health(v.health) : null)));
   if (v.kind === "customers") root.append(section("On track for the dates?", customerDates(v)));
   if (v.kind === "release") root.append(section("On track for the proposed dates?", tracks(v.tracks)));
   if (v.kind === "initiatives") root.append(section("On track for the proposed dates?", initiativeCards(v.initiatives)));
@@ -249,11 +249,16 @@ function renderView(v) {
   return root;
 }
 
-function kpis(list) {
-  return list.map((k) => el("div", { class: "kpi" },
+/** The tiles; a tile counting tickets by source offers each count as a table filter. */
+function kpis(v) {
+  const sourceToggle = (s) => {
+    const text = `${s.source} ${s.count}`;
+    return filterToggle(v, { source: s.source }, text, `${text} ticket${s.count > 1 ? "s" : ""}`);
+  };
+  return v.kpis.map((k) => el("div", { class: "kpi" },
     el("div", { class: "kpi-label" }, k.label),
     el("div", { class: `kpi-value ${k.tone || ""}` }, k.value),
-    el("div", { class: "kpi-note" }, k.note)));
+    el("div", { class: "kpi-note" }, k.by_source?.length ? k.by_source.flatMap((s, i) => [i ? ", " : "", sourceToggle(s)]) : k.note)));
 }
 
 function health(h) {
@@ -318,26 +323,13 @@ function initiativeCards(cards) {
 function customerDates(v) {
   const box = el("div", { class: "track" });
   if (!v.date_groups.length) box.append(el("p", { class: "muted" }, "No ticket in this view has a date yet."));
-  const shown = tableState(v.id).only;
   for (const g of v.date_groups) {
     const left = g.days_left >= 0 ? `${g.days_left} days left` : `${-g.days_left} days ago`;
     const statuses = g.by_status.map((s) => `${s.count} ${s.status}`).join(", ");
     const n = g.keys.length;
     // The ticket count, and the count of tickets putting the group at risk,
-    // limit the table to them; pressing the same one again lifts the limit.
-    const groupToggle = ({ atRisk, text }) => {
-      const only = { date: g.date, atRisk };
-      const on = sameFilter(shown, only);
-      return el("button", {
-        type: "button",
-        class: "link-button",
-        "aria-pressed": on ? "true" : "false",
-        "aria-label": `${text}, due ${fmtDate(g.date)}`,
-        "data-filter": filterId(only),
-        title: on ? "Remove this date filter" : "Show only these tickets in the table below",
-        onclick: () => toggleGroup(v, only),
-      }, text);
-    };
+    // limit the table to them.
+    const groupToggle = ({ atRisk, text }) => filterToggle(v, { date: g.date, atRisk }, text, `${text}, due ${fmtDate(g.date)}`);
     const reason = g.reason && g.stalled.length ? groupToggle({ atRisk: true, text: g.reason }) : g.reason;
     box.append(el("div", { class: "group" },
       el("span", {},
@@ -514,39 +506,62 @@ function tableState(id) {
   return ui.tables[id] || (ui.tables[id] = { q: "", col: -1, asc: true, only: null });
 }
 
-/** Both date filters name the same date and the same subset. */
-const sameFilter = (a, b) => Boolean(a && b && a.date === b.date && a.atRisk === b.atRisk);
-/** Finds a date filter's toggle again after a render. */
-const filterId = (only) => `${only.date}:${only.atRisk}`;
+/** Both filters name the same date and subset, or the same source. A filter
+ * (`only`) is { date, atRisk } or { source }. */
+const sameFilter = (a, b) => Boolean(a && b && a.date === b.date && a.atRisk === b.atRisk && a.source === b.source);
+/** "source" or "date": what a filter limits the table by. */
+const filterKind = (only) => (only.source ? "source" : "date");
+/** Finds a filter's toggle again after a render. */
+const filterId = (only) => (only.source ? `source:${only.source}` : `${only.date}:${only.atRisk}`);
 /** The date group a filter names, if the snapshot still has it. */
 const groupOf = (v, only) => v.date_groups.find((g) => g.date === only.date);
 
-/** The keys a date filter shows: the group's tickets, or those putting it at risk. */
+/** The keys a filter shows: a source's tickets, a date group's, or those putting it at risk. */
 function filterKeys(v, only) {
+  if (only.source) return new Set(v.items.filter((t) => t.source === only.source).map((t) => t.key));
   const g = groupOf(v, only);
   return new Set(g ? (only.atRisk ? g.stalled : g.keys) : []);
 }
 
-/** "Due 1 Nov 2026", or "Due 1 Nov 2026, 13 not started or idle", from the group as it is now. */
+/** "From DDN", "Due 1 Nov 2026", or "Due 1 Nov 2026, 13 not started or idle", from the view as it is now. */
 function filterLabel(v, only) {
+  if (only.source) return `From ${only.source}`;
   const g = groupOf(v, only);
   return `Due ${fmtDate(only.date)}${only.atRisk && g && g.reason ? `, ${g.reason}` : ""}`;
 }
 
-/** Lifts a date filter that the latest snapshot leaves empty (its date
- * passed, its tickets were re-dated, or the group is no longer at risk),
- * so the table never reads as empty when the tickets still exist. */
+/** A count that limits the table to its tickets (`only`); pressing it again lifts the limit. */
+function filterToggle(v, only, text, label) {
+  const on = sameFilter(tableState(v.id).only, only);
+  return el("button", {
+    type: "button",
+    class: "link-button",
+    "aria-pressed": on ? "true" : "false",
+    "aria-label": label,
+    "data-filter": filterId(only),
+    title: on ? `Remove this ${filterKind(only)} filter` : "Show only these tickets in the table below",
+    onclick: () => toggleGroup(v, only),
+  }, text);
+}
+
+/** Lifts a filter that the latest snapshot leaves empty (its date passed,
+ * its tickets were re-dated, the group is no longer at risk, or no ticket
+ * comes from its source any more), so the table never reads as empty when
+ * the tickets still exist. */
 function dropVanishedFilter(v) {
   const st = tableState(v.id);
   if (st.only && !filterKeys(v, st.only).size) {
-    say(`No ticket matches the ${fmtDate(st.only.date)} date filter any more; showing every date.`);
+    say(st.only.source
+      ? `No ticket comes from ${st.only.source} any more; showing every source.`
+      : `No ticket matches the ${fmtDate(st.only.date)} date filter any more; showing every date.`);
     st.only = null;
   }
 }
 
-/** Limits the table to one date group, or to the tickets putting it at
- * risk, or lifts the limit when the same filter is pressed again. An open
- * date editor closes, as on a view switch. Focus moves to what changed. */
+/** Limits the table to one date group, the tickets putting it at risk, or
+ * one source's tickets, or lifts the limit when the same filter is pressed
+ * again. An open date editor closes, as on a view switch. Focus moves to
+ * what changed. */
 function toggleGroup(v, only) {
   const st = tableState(v.id);
   st.only = sameFilter(st.only, only) ? null : only;
@@ -558,16 +573,18 @@ function toggleGroup(v, only) {
     say(`${filterLabel(v, st.only)}: ${shown} of ${v.items.length} tickets shown.`);
   } else {
     document.querySelector(`[data-filter="${filterId(only)}"]`)?.focus();
-    say("Showing every date.");
+    say(`Showing every ${filterKind(only)}.`);
   }
 }
 
-/** Lifts the date filter from its chip; focus goes to the search box beside it. */
-function clearDateFilter(v) {
-  tableState(v.id).only = null;
+/** Lifts the filter from its chip; focus goes to the search box beside it. */
+function clearFilter(v) {
+  const st = tableState(v.id);
+  const kind = filterKind(st.only);
+  st.only = null;
   closeEditor();
   document.querySelector(`#${ITEMS_ID} input[type="search"]`)?.focus();
-  say("Showing every date.");
+  say(`Showing every ${kind}.`);
 }
 
 function itemTable(v) {
@@ -605,7 +622,7 @@ function itemTable(v) {
   const filterChip = st.only
     ? el("span", { class: "filter-chip" },
       filterLabel(v, st.only),
-      el("button", { type: "button", onclick: () => clearDateFilter(v) }, "Clear date filter"))
+      el("button", { type: "button", onclick: () => clearFilter(v) }, `Clear ${filterKind(st.only)} filter`))
     : null;
   draw();
   return el("div", {},

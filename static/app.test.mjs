@@ -308,24 +308,36 @@ function sampleSnapshot() {
     verdict: "at_risk",
     editable_commitments: true,
     undated: 1,
+    kpis: [
+      {
+        label: "Open",
+        value: "6",
+        note: "DDN 1, Whamcloud 5",
+        tone: null,
+        by_source: [{ source: "DDN", count: 1 }, { source: "Whamcloud", count: 5 }],
+      },
+      { label: "S1 / S2", value: "1 / 0", note: "0 past the idle limit", tone: null, by_source: [] },
+    ],
     items: [
       // A mirrored ticket: NP-131 is NCP-163's copy on Jira cloud, and the promise is filed there.
       ticket("NCP-163", {
+        source: "Whamcloud",
         also: ["NP-131"],
         idle_days: 3,
         severity: { level: 1, from_priority: "Critical", label: "S1 (Critical)" },
         committed: promise("NP-131", "2026-11-01", "per QBR"),
       }),
       ticket("NVDCSE-250", {
+        source: "Whamcloud",
         idle_days: 40,
         fix: { key: "EX-15181", url: "https://jira.example/browse/EX-15181", version: "6.3.10", date: "2026-11-01", status: "In Progress" },
         fix_state: "under_way",
       }),
-      ticket("NVDCSE-248", { status: "Open", idle_days: 2, fix_state: "not_started", committed: promise("NVDCSE-248", "2026-11-01") }),
-      ticket("NVDCSE-216", { idle_days: 10, committed: promise("NVDCSE-216", "2026-12-15") }),
-      ticket("NCP-9", { idle_days: 5, committed: promise("NCP-9", "2026-10-15") }),
+      ticket("NVDCSE-248", { source: "Whamcloud", status: "Open", idle_days: 2, fix_state: "not_started", committed: promise("NVDCSE-248", "2026-11-01") }),
+      ticket("NVDCSE-216", { source: "Whamcloud", idle_days: 10, committed: promise("NVDCSE-216", "2026-12-15") }),
+      ticket("NCP-9", { source: "Whamcloud", idle_days: 5, committed: promise("NCP-9", "2026-10-15") }),
       // Its comments could not be read.
-      ticket("DDN-7162", { idle_days: null }),
+      ticket("DDN-7162", { source: "DDN", idle_days: null }),
     ],
     date_groups: [
       {
@@ -755,4 +767,83 @@ test("a date saved in a group view shows at once in All", async () => {
   await press(page, "All");
 
   assert.equal(cell(page, "NCP-163", "Date").textContent.trim(), "20 Nov 2026 committed on NP-131");
+});
+
+const DDN = "DDN 1 ticket";
+const WHAMCLOUD = "Whamcloud 5 tickets";
+
+/** The tile labelled `label`. */
+const tile = (page, label) => page.document.querySelectorAll("#view .kpi").find((k) => k.querySelector(".kpi-label").textContent === label);
+
+test("the Open tile reads as before, with each source's count a button; other tiles keep their note as text", async () => {
+  const page = await openPage();
+
+  assert.equal(tile(page, "Open").querySelector(".kpi-note").textContent, "DDN 1, Whamcloud 5");
+  assert.deepEqual(tile(page, "Open").querySelectorAll("button").map((b) => b.textContent), ["DDN 1", "Whamcloud 5"]);
+  assert.equal(tile(page, "S1 / S2").querySelector(".kpi-note").textContent, "0 past the idle limit");
+  assert.equal(tile(page, "S1 / S2").querySelectorAll("button").length, 0);
+});
+
+test("a source's count limits the table to its tickets, and pressing it again lifts the limit", async () => {
+  const page = await openPage();
+
+  await press(page, WHAMCLOUD);
+
+  assert.deepEqual(rows(page), ["NCP-163", "NVDCSE-250", "NVDCSE-248", "NVDCSE-216", "NCP-9"]);
+  assert.equal(button(page, WHAMCLOUD).getAttribute("aria-pressed"), "true");
+  assert.equal(filterChip(page), "From Whamcloud");
+  assert.equal(flash(page), "From Whamcloud: 5 of 6 tickets shown.");
+  assert.equal(focused(page), "Clear source filter");
+
+  await press(page, WHAMCLOUD);
+
+  assert.deepEqual(rows(page), ALL_ROWS);
+  assert.equal(button(page, WHAMCLOUD).getAttribute("aria-pressed"), "false");
+  assert.equal(filterChip(page), null);
+  assert.equal(flash(page), "Showing every source.");
+  assert.equal(focused(page), WHAMCLOUD);
+});
+
+test("source and date filters replace each other", async () => {
+  const page = await openPage();
+
+  await press(page, NOV_1);
+  await press(page, DDN);
+
+  assert.deepEqual(rows(page), ["DDN-7162"]);
+  assert.equal(button(page, NOV_1).getAttribute("aria-pressed"), "false");
+
+  await press(page, WHAMCLOUD);
+
+  assert.deepEqual(rows(page), ["NCP-163", "NVDCSE-250", "NVDCSE-248", "NVDCSE-216", "NCP-9"], "another source replaces it too");
+
+  await press(page, NOV_1);
+
+  assert.deepEqual(rows(page), ["NCP-163", "NVDCSE-250", "NVDCSE-248"]);
+  assert.equal(button(page, WHAMCLOUD).getAttribute("aria-pressed"), "false");
+});
+
+test("the chip lifts a source filter", async () => {
+  const page = await openPage();
+  await press(page, DDN);
+
+  await press(page, "Clear source filter");
+
+  assert.deepEqual(rows(page), ALL_ROWS);
+  assert.equal(filterChip(page), null);
+  assert.equal(flash(page), "Showing every source.");
+  assert.equal(focused(page), "Filter items");
+});
+
+test("a source filter is dropped when a newer snapshot has no ticket from that source", async () => {
+  const page = await openPage();
+  await press(page, DDN);
+  const newer = sampleSnapshot();
+  nvidiaOf(newer).items = nvidiaOf(newer).items.filter((t) => t.source !== "DDN");
+
+  await publish(page, newer);
+
+  assert.deepEqual(rows(page), ALL_ROWS.filter((key) => key !== "DDN-7162"));
+  assert.equal(filterChip(page), null);
+  assert.equal(flash(page), "No ticket comes from DDN any more; showing every source.");
 });

@@ -1,4 +1,4 @@
-format 6
+format 7
 .duration_secs
 .format
 .generated_at
@@ -131,6 +131,9 @@ format 6
 .tabs[].views[].items[].url
 .tabs[].views[].kind
 .tabs[].views[].kpis
+.tabs[].views[].kpis[].by_source
+.tabs[].views[].kpis[].by_source[].count
+.tabs[].views[].kpis[].by_source[].source
 .tabs[].views[].kpis[].label
 .tabs[].views[].kpis[].note
 .tabs[].views[].kpis[].tone

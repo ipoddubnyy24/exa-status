@@ -127,7 +127,7 @@ h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacin
 .reason.flag { color: var(--warn); }
 .group { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
 .group:last-of-type { border-bottom: none; }
-.group .link-button { font-size: inherit; padding: 0; }
+.group .link-button, .kpi-note .link-button { font-size: inherit; padding: 0; }
 .link-button[aria-pressed="true"] { font-weight: 600; text-decoration: underline; }
 
 .blockers { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px 14px; }
