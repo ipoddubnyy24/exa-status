@@ -1,4 +1,4 @@
-format 10
+format 11
 .duration_secs
 .format
 .generated_at
@@ -11,6 +11,7 @@ format 10
 .tabs[].verdict
 .tabs[].views
 .tabs[].views[].blockers
+.tabs[].views[].blockers[].complete
 .tabs[].views[].blockers[].key
 .tabs[].views[].blockers[].owner
 .tabs[].views[].blockers[].reason
@@ -22,6 +23,7 @@ format 10
 .tabs[].views[].date_groups[].by_status
 .tabs[].views[].date_groups[].by_status[].count
 .tabs[].views[].date_groups[].by_status[].status
+.tabs[].views[].date_groups[].complete
 .tabs[].views[].date_groups[].date
 .tabs[].views[].date_groups[].days_left
 .tabs[].views[].date_groups[].keys
@@ -53,6 +55,7 @@ format 10
 .tabs[].views[].id
 .tabs[].views[].initiatives
 .tabs[].views[].initiatives[].blockers
+.tabs[].views[].initiatives[].blockers[].complete
 .tabs[].views[].initiatives[].blockers[].key
 .tabs[].views[].initiatives[].blockers[].owner
 .tabs[].views[].initiatives[].blockers[].reason

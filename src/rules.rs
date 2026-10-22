@@ -289,6 +289,13 @@ pub(crate) fn delivery(patches: &[PatchRef], families: &[&TagFamily]) -> Option<
     })
 }
 
+/// The ticket is complete: the patches that decide its delivery are all
+/// merged, in a ddn tag or due in the next one. Nothing about it is stalled
+/// or blocking any more.
+pub(crate) fn is_complete(t: &Ticket) -> bool {
+    t.delivery.as_ref().is_some_and(|d| d.merged)
+}
+
 /// The ticket's fixes: linked `fix_projects` tickets, except through a relation
 /// in `non_fix_relations`.
 pub(crate) fn fix_keys<'a>(
@@ -530,10 +537,11 @@ pub(crate) fn date_groups(cfg: &Config, today: NaiveDate, tickets: &[&Ticket]) -
                     .iter()
                     .filter(|t| {
                         // Work on a linked fix counts as started, whatever the
-                        // customer ticket's own status says.
+                        // customer ticket's own status says; a complete ticket
+                        // only waits for its tag.
                         let not_started = t.category == Category::New
                             && matches!(t.fix_state, FixState::NoFix | FixState::NotStarted);
-                        not_started || idle_over(t, cfg.idle_alert_days)
+                        !is_complete(t) && (not_started || idle_over(t, cfg.idle_alert_days))
                     })
                     .map(|t| t.key.clone())
                     .collect()
@@ -566,6 +574,7 @@ pub(crate) fn date_groups(cfg: &Config, today: NaiveDate, tickets: &[&Ticket]) -
                 verdict,
                 reason,
                 stalled,
+                complete: group.iter().filter(|t| is_complete(t)).count(),
             }
         })
         .collect()
@@ -586,10 +595,11 @@ pub(crate) struct SeverityIdle {
     pub(crate) unknown: usize,
 }
 
-/// Judges the S1/S2 tickets by idle time.
+/// Judges the S1/S2 tickets by idle time; a complete one waits for its tag,
+/// not for anyone's attention.
 pub(crate) fn severity_idle(cfg: &Config, tickets: &[&Ticket]) -> SeverityIdle {
     let (mut rated, mut past_limit, mut off_track, mut unknown) = (0, 0, 0, 0);
-    for t in tickets {
+    for t in tickets.iter().filter(|t| !is_complete(t)) {
         let Some((_, limit)) = idle_limit(cfg, t) else {
             continue;
         };
@@ -650,6 +660,7 @@ fn blocker(cfg: &Config, t: &Ticket, reason: String, tone: Tone) -> Blocker {
         reason,
         tone,
         verification: verification(cfg, t),
+        complete: is_complete(t),
     }
 }
 
@@ -676,7 +687,8 @@ fn idle_limit(cfg: &Config, t: &Ticket) -> Option<(Rule, i64)> {
     }
 }
 
-/// Customer blockers, most urgent first.
+/// Customer blockers, most urgent first. A complete ticket counts only when
+/// its committed date passed.
 pub(crate) fn customer_blockers(
     cfg: &Config,
     today: NaiveDate,
@@ -689,7 +701,13 @@ pub(crate) fn customer_blockers(
             let passed = target(t)
                 .filter(|(d, _)| *d < today)
                 .map(|(_, source)| source);
-            let (rule, reason, tone) = if let Some((rule, limit)) = idle_limit(cfg, t)
+            // A complete ticket blocks nothing; only a promise it missed still shows.
+            let complete = is_complete(t);
+            if complete && passed != Some(TargetSource::Committed) {
+                return None;
+            }
+            let (rule, reason, tone) = if !complete
+                && let Some((rule, limit)) = idle_limit(cfg, t)
                 && let Some(severity) = &t.severity
                 && idle_over(t, limit)
             {
@@ -726,7 +744,7 @@ pub(crate) fn customer_blockers(
     ranked(found)
 }
 
-/// Release blockers, most urgent first. Test cases are skipped.
+/// Release blockers, most urgent first. Test cases and complete items are skipped.
 pub(crate) fn release_blockers(
     cfg: &Config,
     today: NaiveDate,
@@ -734,7 +752,7 @@ pub(crate) fn release_blockers(
 ) -> Vec<Blocker> {
     let found = tickets
         .iter()
-        .filter(|t| !is_test_case(t))
+        .filter(|t| !is_test_case(t) && !is_complete(t))
         .filter_map(|t| {
             let idle = t.idle_days;
             let (rule, reason, tone) = if has_priority(t, BLOCKER) {
@@ -1381,6 +1399,74 @@ pub(crate) mod tests {
 
         t.committed = Some(committed("DDN-1", d(2026, 11, 1)));
         assert_eq!(target(&t), Some((d(2026, 11, 1), TargetSource::Committed)));
+    }
+
+    #[test]
+    fn a_complete_ticket_is_never_stalled() {
+        let cfg = Config::default();
+        // S1, idle long past every limit, promised inside the risk window.
+        let mut complete = idle(ticket("NVDCSE-250", "x"), 40);
+        (complete.severity, complete.priority) = (Some(Severity::field(1)), Some(BLOCKER.into()));
+        complete.committed = Some(committed("NVDCSE-250", d(2026, 11, 1)));
+        complete.delivery = Some(delivered(true, None));
+        let mut in_review = complete.clone();
+        in_review.key = "NVDCSE-221".parse().unwrap();
+        in_review.delivery = Some(delivered(false, None));
+
+        let groups = date_groups(&cfg, today(), &[&complete, &in_review]);
+
+        assert_eq!(
+            groups
+                .iter()
+                .map(|g| (
+                    g.stalled.iter().map(ToString::to_string).collect(),
+                    g.complete
+                ))
+                .collect::<Vec<(Vec<String>, usize)>>(),
+            [(vec!["NVDCSE-221".to_string()], 1)]
+        );
+        assert_eq!(
+            severity_idle(&cfg, &[&complete]).verdict,
+            Verdict::NoDate,
+            "no S1/S2 ticket left to judge by idle time"
+        );
+        assert_eq!(severity_idle(&cfg, &[&complete, &in_review]).past_limit, 1);
+        assert!(customer_blockers(&cfg, today(), &[&complete]).is_empty());
+    }
+
+    #[test]
+    fn a_complete_ticket_is_a_blocker_only_for_a_missed_promise() {
+        let mut t = idle(ticket("NCP-9", "x"), 40);
+        (t.severity, t.priority) = (Some(Severity::field(1)), Some(BLOCKER.into()));
+        t.committed = Some(committed("NCP-9", d(2026, 10, 15)));
+        t.delivery = Some(delivered(true, None));
+
+        let blockers = customer_blockers(&Config::default(), today(), &[&t]);
+
+        assert_eq!(
+            blockers
+                .iter()
+                .map(|b| (b.reason.as_str(), b.complete))
+                .collect::<Vec<_>>(),
+            [("Committed date passed", true)],
+            "not its idle time or its priority"
+        );
+    }
+
+    #[test]
+    fn a_complete_item_is_no_release_blocker() {
+        let mut open = ticket("EX-1", "x");
+        (open.priority, open.due) = (Some(BLOCKER.into()), Some(d(2026, 10, 1)));
+        let mut complete = open.clone();
+        complete.key = "EX-2".parse().unwrap();
+        complete.delivery = Some(delivered(true, None));
+
+        let blockers = release_blockers(&Config::default(), today(), &[&open, &complete]);
+
+        assert_eq!(
+            blockers.iter().map(|b| b.key.as_str()).collect::<Vec<_>>(),
+            ["EX-1"]
+        );
     }
 
     #[test]

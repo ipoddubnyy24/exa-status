@@ -1081,10 +1081,33 @@ test("patches that decide a ticket's delivery stand in for its linked fix and it
     ["NVDCSE-250", "DDN-7162"].map((key) => [cell(page, key, "Fix").textContent, cell(page, key, "Date").textContent]),
     [
       ["es6 review, for ES6.3.9_C1", "6 Nov 2026 patch Set"],
-      ["es6 ddn262, es7 merged", "Set"],
+      ["es6 ddn262, es7 merged (next tag)", "Set"],
     ],
   );
   assert.equal(cell(page, "NVDCSE-250", "Date").childNodes[0].getAttribute("title"), "The date of ES6.3.9_C1, expected to carry its patches in review");
   heading(page, "Date").click();
   assert.deepEqual(rows(page), ["NCP-9", "NCP-163", "NVDCSE-248", "NVDCSE-250", "NVDCSE-216", "DDN-7162"]);
+});
+
+test("a complete ticket reads as complete: in the table, in its date group and among the blockers", async () => {
+  const snap = sampleSnapshot();
+  const nvidia = nvidiaOf(snap);
+  const merged = { branches: [{ branch: "b_es6_0", merged: true, tag: null }], merged: true, release: null, date: null };
+  Object.assign(nvidia.items.find((t) => t.key === "NCP-9"), { status: "Open", fix_state: "delivered", delivery: merged });
+  // Its fix awaits verification too: both pills show.
+  Object.assign(nvidia.items.find((t) => t.key === "NVDCSE-248"), { verification: "awaiting_validation", fix_state: "delivered", delivery: merged });
+  nvidia.date_groups.find((g) => g.date === "2026-11-01").complete = 1;
+  nvidia.blockers = [{ ...blockerOf("NCP-9", "Committed date passed"), complete: true }];
+  const page = await openPage(new FakeServer(snap));
+  const group = page.document.querySelectorAll("#view .group").find((g) => g.textContent.startsWith("1 Nov 2026"));
+
+  assert.deepEqual(
+    ["NCP-9", "NVDCSE-248"].map((key) => [rowOf(page, key).getAttribute("class"), cell(page, key, "Status").textContent, cell(page, key, "Fix").textContent]),
+    [
+      ["complete", "Open Complete", "es6 merged (next tag)"],
+      ["awaiting complete", "Open awaiting_validation Complete", "es6 merged (next tag)"],
+    ],
+  );
+  assert.match(group.textContent, /, 1 complete\. 2 not started or idle/);
+  assert.deepEqual(blockerChips(page), { "NCP-9": ["Committed date passed", "Complete"] });
 });

@@ -155,6 +155,7 @@ h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacin
 .epics { font-size: 13px; margin-bottom: 6px; }
 .badge { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .badge.verify { color: var(--verify); border-color: var(--verify); white-space: nowrap; }
+.badge.complete { color: var(--ok); border-color: var(--ok); white-space: nowrap; }
 .link-button { border: none; background: none; color: var(--accent); padding: 0 2px; font-size: 12px; }
 .link-button:hover { background: none; text-decoration: underline; }
 .editor { display: inline-flex; gap: 4px; flex-wrap: wrap; align-items: center; }
@@ -178,6 +179,7 @@ td:first-child { white-space: nowrap; }
 td.cell-sum { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 tr.awaiting td { background: var(--verify-bg); }
+tr.complete td { background: var(--ok-bg); }
 .also { color: var(--muted); font-size: 12px; }
 
 @media (max-width: 760px) {

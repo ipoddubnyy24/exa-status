@@ -162,7 +162,8 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   `non_fix_relations` (escalation bookkeeping); DDN links most fixes with "is
   related to". A fix's date is the release date of its EX fixVersion; EXR
   fixVersions are planning quarters ("2025Q4"), so an EXR fix gives no date.
-  "Fix delivered" means every linked fix, EX or EXR, was read and is done;
+  The Fix complete tile counts tickets whose every linked fix, EX or EXR,
+  was read and is done, and complete tickets (see Patches);
   once a fix is under way, an open customer ticket no longer counts as "not
   started" in its date group. Where patches decide a ticket's delivery, they
   stand in for its linked fixes.
@@ -176,18 +177,27 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   changes). Abandoned changes do not count. Where a branch's `views` name
   the view, its patches decide delivery in place of Jira: es6 in every
   customer group and EXA6, es7 in GCP (which runs both) and EXA7 Beta and
-  GA. A ticket with patches on two such branches is delivered once both are
+  GA. A ticket with patches on two such branches is complete once both are
   merged.
-  - Customer tickets: merged patches read as "fix delivered" and leave
-    nothing to date; one in review reads as under way and dates the ticket
-    by the release expected to carry it (`release`: ES6.3.10 for es6, EXA7
-    Beta for es7; of two, the later). A committed date still comes first.
-    The Fix column shows them as in the Patches column: "es6 ddn262",
-    "es6 merged" (not in a tag yet), "es7 review, for EXA7 Beta".
-  - Release items: a merged patch counts the item as done in the
-    projection and one in review weighs as In Review, whatever the Jira
-    status; judged per item, a merged item is never at risk and one in
-    review has started.
+  - Complete: every such patch is merged, in a ddn tag or due in the next
+    one. A complete ticket is almost done, never stalled: it leaves the
+    S1/S2 idle limits, the idle tile, its date group's "not started or
+    idle", the blocker lists (a customer ticket stays only when its
+    committed date passed, chipped Complete) and the release risk tiles
+    (Blocker priority, Critical, Past due date, which say how many they
+    leave out). It needs no date. It counts as complete instead: in the Fix
+    complete and Dated tiles, its date group ("2 complete") and the open
+    scope of EXA6 and EXA7; the tables show a Complete pill on a green row.
+  - Customer tickets: a complete one reads as fix delivered; one with a
+    patch in review reads as under way and is dated by the release
+    expected to carry it (`release`: ES6.3.10 for es6, EXA7 Beta for es7;
+    of two, the later). A committed date still comes first. The Fix column
+    shows the patches: "es6 ddn262", "es6 merged (next tag)", "es7 review,
+    for EXA7 Beta".
+  - Release items: a complete item counts as done in the projection and
+    one with a patch in review weighs as In Review and counts as in review,
+    whatever the Jira status; judged per item, a complete item is never at
+    risk and one in review has started.
 - Test cases (issue type Test) are not counted as release blockers or in
   EXA SD's open scope. A release view lists them in a table of their own,
   below the other items.

@@ -522,21 +522,38 @@ impl<'a> Context<'a> {
             .filter(|t| t.severity.as_ref().is_some_and(Severity::is_from_priority))
             .count();
         let idle = rules::severity_idle(cfg, &refs);
-        let idle_count = refs
+        // A complete ticket waits for its tag, so its idle time is no stall.
+        let (complete, waiting): (Vec<&Ticket>, Vec<&Ticket>) =
+            refs.iter().partition(|t| rules::is_complete(t));
+        let idle_count = waiting
             .iter()
             .filter(|t| t.idle_days.is_some_and(|i| i > cfg.idle_alert_days))
             .count();
-        let idle_month = refs
+        let idle_month = waiting
             .iter()
             .filter(|t| t.idle_days.is_some_and(|i| i > cfg.idle_offtrack_days))
             .count();
-        let idle_unknown = refs.iter().filter(|t| t.idle_days.is_none()).count();
+        let idle_unknown = waiting.iter().filter(|t| t.idle_days.is_none()).count();
         let delivered = refs
             .iter()
             .filter(|t| t.fix_state == FixState::Delivered)
             .count();
+        let next_tag = complete
+            .iter()
+            .filter(|t| {
+                t.delivery
+                    .as_ref()
+                    .is_some_and(|d| d.branches.iter().any(|b| b.tag.is_none()))
+            })
+            .count();
         let committed = refs.iter().filter(|t| t.committed.is_some()).count();
         let dated = refs.iter().filter(|t| rules::target(t).is_some()).count();
+        // Nor does it need a date: it is in a tag, or due in the next one.
+        let complete_undated = complete
+            .iter()
+            .filter(|t| rules::target(t).is_none())
+            .count();
+        let undated = refs.len() - dated - complete_undated;
         let groups = rules::date_groups(cfg, self.today, &refs);
         let date_verdict = groups
             .iter()
@@ -649,20 +666,32 @@ impl<'a> Context<'a> {
                     None,
                 ),
                 kpi(
-                    "Fix delivered",
+                    "Fix complete",
                     delivered.to_string(),
-                    "patches merged or every linked fix done, ticket open".into(),
+                    if next_tag > 0 {
+                        format!(
+                            "patches merged ({next_tag} due in the next tag) or every linked fix done"
+                        )
+                    } else {
+                        "patches merged or every linked fix done".into()
+                    },
                     None,
                 ),
                 kpi(
                     "Dated",
                     dated.to_string(),
-                    format!("{committed} committed, {} have no date", open - dated),
+                    if complete_undated > 0 {
+                        format!(
+                            "{committed} committed, {undated} have no date, {complete_undated} complete"
+                        )
+                    } else {
+                        format!("{committed} committed, {undated} have no date")
+                    },
                     None,
                 ),
             ],
             tracks: Vec::new(),
-            undated: open - dated,
+            undated,
             date_groups: groups,
             blockers,
             items,
@@ -1006,9 +1035,20 @@ impl<'a> Context<'a> {
     ) -> View {
         let cfg = self.cfg;
         let today = self.today;
-        let review = items.iter().filter(|t| cfg.in_review(&t.status)).count();
-        let work: Vec<&&Ticket> = items.iter().filter(|t| !rules::is_test_case(t)).collect();
-        let tests = items.len() - work.len();
+        let complete = items.iter().filter(|t| rules::is_complete(t)).count();
+        // A patch in review puts an item in review, whatever its Jira status.
+        let review = items
+            .iter()
+            .filter(|t| {
+                !rules::is_complete(t) && (t.delivery.is_some() || cfg.in_review(&t.status))
+            })
+            .count();
+        let tests = items.iter().filter(|t| rules::is_test_case(t)).count();
+        // The risk numbers leave out test cases and complete items.
+        let work: Vec<&&Ticket> = items
+            .iter()
+            .filter(|t| !rules::is_test_case(t) && !rules::is_complete(t))
+            .collect();
         let blocker_priority = work
             .iter()
             .filter(|t| rules::has_priority(t, BLOCKER))
@@ -1018,10 +1058,16 @@ impl<'a> Context<'a> {
             .iter()
             .filter(|t| rules::has_priority(t, CRITICAL))
             .count();
-        let tests_note = if tests > 0 {
-            format!(", {tests} test cases not counted")
-        } else {
+        let complete_work = items.len() - tests - work.len();
+        let uncounted: Vec<String> = [(tests, "test cases"), (complete_work, "complete")]
+            .into_iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, what)| format!("{n} {what}"))
+            .collect();
+        let uncounted_note = if uncounted.is_empty() {
             String::new()
+        } else {
+            format!(", {} not counted", uncounted.join(" and "))
         };
         let s1 = work
             .iter()
@@ -1067,25 +1113,29 @@ impl<'a> Context<'a> {
                 kpi(
                     "Open scope",
                     items.len().to_string(),
-                    format!("{review} in review or verification"),
+                    if complete > 0 {
+                        format!("{complete} complete, {review} in review or verification")
+                    } else {
+                        format!("{review} in review or verification")
+                    },
                     None,
                 ),
                 kpi(
                     "Blocker priority",
                     blocker_priority.to_string(),
-                    format!("+{blocked} blocked{tests_note}"),
+                    format!("+{blocked} blocked{uncounted_note}"),
                     (blocker_priority > 0).then_some(Tone::Danger),
                 ),
                 kpi(
                     "Critical",
                     critical.to_string(),
-                    format!("S1 {s1}, S2 {s2}{tests_note}"),
+                    format!("S1 {s1}, S2 {s2}{uncounted_note}"),
                     None,
                 ),
                 kpi(
                     "Past due date",
                     past_due.to_string(),
-                    format!("of {with_due} with a date{tests_note}"),
+                    format!("of {with_due} with a date{uncounted_note}"),
                     None,
                 ),
                 kpi(
@@ -2443,6 +2493,89 @@ mod tests {
         assert!(notes.contains(
             &"EXA7 Delta has no date, so patches in review on b_es7_0 give none.".to_string()
         ));
+    }
+
+    #[test]
+    fn complete_tickets_count_as_complete_not_as_stalled() {
+        let cfg = Config::default();
+        let raw = raw();
+        // Merged, not in a tag yet: due in the next one.
+        let merged = patch(1, "b_es6_0", ChangeStatus::Merged, None);
+        let tagged = patch(2, "b_es6_0", ChangeStatus::Merged, Some("2.14.0-ddn262"));
+        let in_review = patch(3, "b_es6_0", ChangeStatus::New, None);
+        let patches = Patches {
+            map: HashMap::from([
+                ("DDN-3571".parse().unwrap(), vec![merged.clone()]),
+                ("DDN-6000".parse().unwrap(), vec![tagged.clone()]),
+                ("EX-1".parse().unwrap(), vec![merged.clone()]),
+                ("EX-2".parse().unwrap(), vec![merged]),
+                ("EX-3".parse().unwrap(), vec![tagged]),
+                ("EX-50".parse().unwrap(), vec![in_review]),
+            ]),
+            errors: vec![],
+        };
+        let with = snapshot(&cfg, &raw, GerritState::Read(&patches), timing()).unwrap();
+        let without = build(&raw);
+        let tile = |snap: &Snapshot, id: ViewId, label: &str| {
+            view(snap, id)
+                .kpis
+                .iter()
+                .find(|k| k.label == label)
+                .map(|k| (k.value.clone(), k.note.clone()))
+        };
+        let blocks = |snap: &Snapshot, id: ViewId, key: &str| {
+            view(snap, id)
+                .blockers
+                .iter()
+                .any(|b| b.key.as_str() == key)
+        };
+
+        // DDN-3571, S1 and idle 1041 days, put All others off track; complete,
+        // it waits for its tag and needs no date.
+        assert_eq!(
+            (view(&without, OTHERS).verdict, view(&with, OTHERS).verdict),
+            (Verdict::OffTrack, Verdict::NoDate)
+        );
+        assert!(blocks(&without, OTHERS, "DDN-3571") && !blocks(&with, OTHERS, "DDN-3571"));
+        assert_eq!(
+            tile(&with, OTHERS, "S1 / S2"),
+            Some(("1 / 0".into(), "0 past the idle limit".into()))
+        );
+        assert_eq!(
+            tile(&with, OTHERS, "Idle over 7 days").map(|(v, _)| v),
+            Some("0".into())
+        );
+        assert_eq!(
+            tile(&with, OTHERS, "Fix complete"),
+            Some((
+                "2".into(),
+                "patches merged (1 due in the next tag) or every linked fix done".into()
+            ))
+        );
+        assert_eq!(
+            tile(&with, NVIDIA, "Fix complete"),
+            Some(("0".into(), "patches merged or every linked fix done".into()))
+        );
+        assert_eq!(
+            tile(&with, OTHERS, "Dated").map(|(_, note)| note),
+            Some("0 committed, 3 have no date, 2 complete".into())
+        );
+        assert_eq!(view(&with, OTHERS).undated, 3);
+        // EX-1, a Blocker in EXA6, leaves the blockers and the risk tiles.
+        // EX-2 and EX-3 (In Review) count as complete in the open scope, and
+        // EX-50 (To Do) as in review, by its patch.
+        assert!(blocks(&without, EXA6, "EX-1") && !blocks(&with, EXA6, "EX-1"));
+        assert_eq!(
+            tile(&with, EXA6, "Blocker priority"),
+            Some(("0".into(), "+0 blocked, 3 complete not counted".into()))
+        );
+        assert_eq!(
+            tile(&with, EXA6, "Open scope").map(|(_, note)| note),
+            Some(format!(
+                "3 complete, {} in review or verification",
+                cfg.small_release_max + 1
+            ))
+        );
     }
 
     #[test]

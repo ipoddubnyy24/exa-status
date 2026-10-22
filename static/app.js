@@ -343,6 +343,7 @@ function customerDates(v) {
         el("strong", {}, `${fmtDate(g.date)}, ${left}: `),
         groupToggle({ atRisk: false, text: `${n} ticket${n > 1 ? "s" : ""}` }),
         `, ${statuses}`,
+        g.complete ? `, ${g.complete} complete` : null,
         reason ? [". ", reason] : null),
       chip(g.verdict)));
   }
@@ -381,7 +382,8 @@ function blockerList(id, list, shown, name) {
     el("span", { class: "muted" }, b.owner || "Unassigned"),
     el("span", { class: "reasons" },
       toneChip(b.tone, b.reason),
-      b.verification ? el("span", { class: "chip verify", title: b.verification }, "Awaiting verification") : null)));
+      b.verification ? el("span", { class: "chip verify", title: b.verification }, "Awaiting verification") : null,
+      b.complete ? el("span", { class: "chip ok", title: "Its patches are merged" }, "Complete") : null)));
   const toggle = () => { if (all) ui.expanded.delete(id); else ui.expanded.add(id); render(); };
   return el("div", { class: "blockers" }, rows,
     el("p", { class: "more" },
@@ -443,10 +445,13 @@ function patchCell(t) {
   }));
 }
 
-/** Where the patches that decide a ticket's delivery are, branch by branch,
- * and the release expected to carry those in review. */
+/** Where the patches that decide a ticket's delivery are, branch by branch
+ * ("es6 merged (next tag)" until the next ddn tag has them), and the release
+ * expected to carry those in review. */
 function deliveryText(d) {
-  const where = d.branches.map((b) => patchText(b.branch, b.merged, b.tag)).join(", ");
+  const where = d.branches
+    .map((b) => (b.merged && !b.tag ? `${branchName(b.branch)} merged (next tag)` : patchText(b.branch, b.merged, b.tag)))
+    .join(", ");
   return d.release ? `${where}, for ${d.release}` : where;
 }
 
@@ -517,13 +522,22 @@ function customerDateCell(t, editable) {
 }
 
 const sevPri = (t) => (t.severity ? t.severity.label : t.priority || "");
-/** The status; a ticket whose fix awaits verification shows what says so,
- * its status or a label, as a pill. */
+/** Every patch that decides the ticket's delivery is merged: it is in a ddn
+ * tag, or due in the next one. */
+const isComplete = (t) => Boolean(t.delivery && t.delivery.merged);
+/** The status, with pills for what it may not say: the fix awaits
+ * verification (that status or a label), or the ticket is complete. */
 function statusCell(t) {
-  if (!t.verification) return t.status;
-  const pill = el("span", { class: "badge verify", title: "Awaiting verification" }, t.verification);
-  return t.verification === t.status ? pill : el("span", {}, t.status, " ", pill);
+  const pills = [
+    t.verification ? el("span", { class: "badge verify", title: "Awaiting verification" }, t.verification) : null,
+    isComplete(t) ? el("span", { class: "badge complete", title: "Its patches are merged: in a ddn tag, or due in the next one" }, "Complete") : null,
+  ].filter(Boolean);
+  if (!pills.length) return t.status;
+  const parts = [...(t.verification === t.status ? [] : [t.status]), ...pills];
+  return el("span", {}, parts.flatMap((part, i) => (i ? [" ", part] : [part])));
 }
+/** Highlights a row whose fix awaits verification, or that is complete. */
+const rowClass = (t) => [t.verification ? "awaiting" : null, isComplete(t) ? "complete" : null].filter(Boolean).join(" ") || null;
 const unknownIdle = (t) => t.idle_days === null || t.idle_days === undefined;
 /** Idle time. Customer tickets are all read, so a missing one could not be
  * read and shows as unknown; release items are read only where a rule needs it. */
@@ -538,7 +552,7 @@ const idleCell = (customers) => (t) => {
 const idleSort = (customers) => (t) => (unknownIdle(t) ? (customers ? Infinity : -1) : t.idle_days);
 const fixCell = (t) => {
   if (t.delivery) {
-    const why = t.delivery.merged ? "Delivered: every patch is merged" : "A patch is still in review";
+    const why = t.delivery.merged ? "Complete: every patch is merged" : "A patch is still in review";
     return el("span", { title: why }, deliveryText(t.delivery));
   }
   if (t.fix) return el("span", { title: `${t.fix.status}` }, link(t.fix.url, `${t.fix.key} ${t.fix.version}`));
@@ -696,7 +710,7 @@ function itemTable(v, { items = v.items, stateId = v.id, name = "items" } = {}) 
       });
     }
     shown = rows;
-    tbody.replaceChildren(...rows.map((t) => el("tr", { class: t.verification ? "awaiting" : null }, cols.map((c) => el("td", { class: c.cls || null }, c.cell(t))))));
+    tbody.replaceChildren(...rows.map((t) => el("tr", { class: rowClass(t) }, cols.map((c) => el("td", { class: c.cls || null }, c.cell(t))))));
     head.querySelectorAll("th").forEach((th, i) => {
       th.className = i === st.col ? `sorted${st.asc ? " asc" : ""}` : "";
       th.setAttribute("aria-sort", i === st.col ? (st.asc ? "ascending" : "descending") : "none");

@@ -11,7 +11,7 @@ use url::Url;
 /// Version of the snapshot layout. The server serves a snapshot only when it
 /// matches, so a server built before a layout change never feeds its embedded
 /// page a snapshot written by a newer worker.
-pub(crate) const SNAPSHOT_FORMAT: u32 = 10;
+pub(crate) const SNAPSHOT_FORMAT: u32 = 11;
 
 /// A view (sub-tab). Notes name the views they concern, and the UI keeps the
 /// selected one across refreshes by its id.
@@ -610,6 +610,8 @@ pub(crate) struct DateGroup {
     /// or idle over `idle_alert_days` (unknown counts). Empty when on or off
     /// track.
     pub(crate) stalled: Vec<IssueKey>,
+    /// Its complete tickets: their patches are merged, so they are never stalled.
+    pub(crate) complete: usize,
 }
 
 /// One entry in a blocker list.
@@ -629,6 +631,8 @@ pub(crate) struct Blocker {
     pub(crate) tone: Tone,
     /// As on the ticket: what says its fix awaits verification.
     pub(crate) verification: Option<String>,
+    /// Its patches are all merged; listed only because a committed date passed.
+    pub(crate) complete: bool,
 }
 
 /// One pass rate on the build-health tile: Lustre sessions with no failure
