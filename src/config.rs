@@ -44,12 +44,20 @@ const VERIFY_STATUSES: [&str; 4] = [
 const AWAITING_VERIFICATION: &str = "awaiting verification";
 /// The label NVDCSE tickets carry while their fix waits for validation.
 const AWAITING_VALIDATION_LABEL: &str = "awaiting_validation";
-/// The ES6.3.10 release date Ivan set on 22 Oct 2026; Jira and the PM page
-/// said otherwise. Checked when compiled, so it cannot panic at run time.
-const ES6_3_10_RELEASE: NaiveDate = match NaiveDate::from_ymd_opt(2027, 1, 27) {
-    Some(date) => date,
-    None => panic!("ES6_3_10_RELEASE is not a date"),
-};
+/// Release dates Ivan set on 22 Oct 2026, where Jira and the PM pages said
+/// otherwise. Evaluated when compiled, so a wrong date fails the build.
+const AGREED_DATES: [(&str, NaiveDate); 2] = [
+    ("ES6.3.10", date(2027, 1, 27)),
+    ("EXA7 GA", date(2027, 3, 31)),
+];
+
+/// A calendar date for a constant; one that does not exist stops the build.
+const fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+    match NaiveDate::from_ymd_opt(year, month, day) {
+        Some(date) => date,
+        None => panic!("not a calendar date"),
+    }
+}
 
 /// Jira projects whose open tickets feed the customer tabs.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -283,9 +291,10 @@ pub(crate) struct Config {
     /// release counts the filter's open issues and its closures in the window
     /// instead of every item in the version.
     pub(crate) scope_filters: BTreeMap<String, u64>,
-    /// Release dates agreed outside Jira and the PM pages, by the name a
-    /// release's card shows (for EXA6, its fixVersion). Its verdict is
-    /// measured against this date before the PM page's and Jira's.
+    /// Release dates agreed outside Jira and the PM pages, by release: an
+    /// EXA6 fixVersion ("ES6.3.10"), "EXA7 Beta", "EXA7 GA", an EXA SD phase or
+    /// a Future work initiative. Its verdict is measured against this date
+    /// before the PM page's and Jira's.
     pub(crate) release_dates: BTreeMap<String, NaiveDate>,
     /// EXA SD's Jira project.
     pub(crate) exa_sd_project: String,
@@ -451,7 +460,10 @@ impl Default for Config {
             exa7_ga_versions: strings(&["ES7.0.0", "ES7.1.0"]),
             // "EX 6.3.10 scope", Manish Agrawal's filter, chosen on 22 Oct 2026.
             scope_filters: BTreeMap::from([("ES6.3.10".into(), 49208)]),
-            release_dates: BTreeMap::from([("ES6.3.10".into(), ES6_3_10_RELEASE)]),
+            release_dates: AGREED_DATES
+                .iter()
+                .map(|(name, date)| ((*name).to_string(), *date))
+                .collect(),
             exa_sd_project: "EXM".into(),
             exa_sd_phase_prefix: "NVMesh-P".into(),
             exa_sd_pm_phase: "NVMesh-P2".into(),
@@ -843,8 +855,11 @@ mod tests {
         let date = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
 
         assert_eq!(
-            Config::default().release_dates.get("ES6.3.10"),
-            Some(&date(2027, 1, 27))
+            Config::default().release_dates,
+            BTreeMap::from([
+                ("ES6.3.10".to_string(), date(2027, 1, 27)),
+                ("EXA7 GA".to_string(), date(2027, 3, 31))
+            ])
         );
         let set = Config::parse(r#"{"release_dates": {"ES6.3.10": "2027-02-01"}}"#).unwrap();
         assert_eq!(

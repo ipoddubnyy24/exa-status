@@ -250,6 +250,8 @@ struct TrackSpec<'s> {
     page: Option<u64>,
     /// The label of its date on that page ("Beta", "GA"); `None` takes the first date.
     label: Option<&'s str>,
+    /// The name its agreed release date is kept under (`release_dates`).
+    date_key: &'s str,
 }
 
 /// A judged release or phase.
@@ -654,7 +656,7 @@ impl<'a> Context<'a> {
                 pm_unread,
                 jira_date,
                 start_date,
-                agreed_date: self.cfg.release_dates.get(spec.name).copied(),
+                agreed_date: self.cfg.release_dates.get(spec.date_key).copied(),
             },
         );
         if !missing.is_empty() {
@@ -696,6 +698,7 @@ impl<'a> Context<'a> {
             closed: &self.raw.ex_closed,
             page,
             label,
+            date_key: name,
         }
     }
 
@@ -746,12 +749,15 @@ impl<'a> Context<'a> {
         exa6_view.notes = exa6_notes;
 
         let beta = std::slice::from_ref(&cfg.exa7_beta_version);
-        let judged = self.release_track(&self.ex_spec(
-            &cfg.exa7_beta_version,
-            beta,
-            Some(pages.exa7),
-            Some(&pages.exa7_beta_label),
-        ));
+        let judged = self.release_track(&TrackSpec {
+            date_key: ViewId::Exa7Beta.label(),
+            ..self.ex_spec(
+                &cfg.exa7_beta_version,
+                beta,
+                Some(pages.exa7),
+                Some(&pages.exa7_beta_label),
+            )
+        });
         let mut beta_view = self.release_view(
             ViewId::Exa7Beta,
             vec![judged.track],
@@ -764,12 +770,10 @@ impl<'a> Context<'a> {
 
         let ga = &cfg.exa7_ga_versions;
         let ga_name = format!("EXA7 GA ({})", ga.join(" + "));
-        let judged = self.release_track(&self.ex_spec(
-            &ga_name,
-            ga,
-            Some(pages.exa7),
-            Some(&pages.exa7_ga_label),
-        ));
+        let judged = self.release_track(&TrackSpec {
+            date_key: ViewId::Exa7Ga.label(),
+            ..self.ex_spec(&ga_name, ga, Some(pages.exa7), Some(&pages.exa7_ga_label))
+        });
         let mut ga_view = self.release_view(
             ViewId::Exa7Ga,
             vec![judged.track],
@@ -796,6 +800,7 @@ impl<'a> Context<'a> {
                 closed: &raw.sd_closed,
                 page,
                 label: None,
+                date_key: name,
             };
             let judged = self.release_track(&spec);
             sd_tracks.push(judged.track);
@@ -1892,30 +1897,28 @@ mod tests {
 
     #[test]
     fn a_release_is_judged_against_its_agreed_date() {
-        let snap = build(&raw());
-        let track = |name: &str| {
-            view(&snap, EXA6)
+        let mut cfg = Config::default();
+        cfg.release_dates.insert("EXA7 Beta".into(), d(2026, 12, 1));
+        let snap = snapshot(&cfg, &raw(), GerritState::NotRead, timing()).unwrap();
+        let track = |id: ViewId, name: &str| {
+            view(&snap, id)
                 .tracks
                 .iter()
                 .find(|t| t.name == name)
-                .map(|t| (t.ref_source, t.ref_date, t.jira_date))
+                .map(|t| (t.ref_source, t.ref_date))
         };
+        let agreed = |y, m, day| Some((Some(DateSource::Agreed), Some(d(y, m, day))));
 
+        assert_eq!(track(EXA6, "ES6.3.10"), agreed(2027, 1, 27));
         assert_eq!(
-            track("ES6.3.10"),
-            Some((
-                Some(DateSource::Agreed),
-                Some(d(2027, 1, 27)),
-                Some(d(2026, 12, 15))
-            ))
+            track(EXA7_GA, "EXA7 GA (ES7.0.0 + ES7.1.0)"),
+            agreed(2027, 3, 31),
+            "EXA7 GA is set by its view's name, whatever versions it covers"
         );
+        assert_eq!(track(EXA7_BETA, "ES7.0.0_Beta"), agreed(2026, 12, 1));
         assert_eq!(
-            track("ES6.3.9_C1"),
-            Some((
-                Some(DateSource::Jira),
-                Some(d(2026, 11, 6)),
-                Some(d(2026, 11, 6))
-            )),
+            track(EXA6, "ES6.3.9_C1"),
+            Some((Some(DateSource::Jira), Some(d(2026, 11, 6)))),
             "a release without one keeps the PM page or Jira date"
         );
     }
