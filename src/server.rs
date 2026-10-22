@@ -32,7 +32,10 @@ use crate::tls::{self, CertPaths};
 
 const INDEX: &str = include_str!("../static/index.html");
 const APP_JS: &str = include_str!("../static/app.js");
+/// The .xlsx writer behind the page's table exports.
+const XLSX_JS: &str = include_str!("../static/xlsx.js");
 const STYLE: &str = include_str!("../static/style.css");
+const JS_TYPE: &str = "text/javascript; charset=utf-8";
 /// The worker sub-command the server runs for each refresh.
 pub(crate) const REFRESH_COMMAND: &str = "refresh-once";
 /// How often the scheduler checks whether a refresh is due and rereads the
@@ -283,6 +286,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/app.js", get(app_js))
+        .route("/xlsx.js", get(xlsx_js))
         .route("/style.css", get(style))
         .route("/api/snapshot", get(snapshot))
         .route("/api/status", get(status))
@@ -357,10 +361,11 @@ async fn index() -> impl IntoResponse {
 }
 
 async fn app_js() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        APP_JS,
-    )
+    ([(header::CONTENT_TYPE, JS_TYPE)], APP_JS)
+}
+
+async fn xlsx_js() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, JS_TYPE)], XLSX_JS)
 }
 
 async fn style() -> impl IntoResponse {
@@ -841,27 +846,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_page_is_served_with_security_headers() {
+    async fn the_page_and_its_files_are_served_with_security_headers() {
         let f = fixture();
 
-        let response = f
-            .app
-            .clone()
-            .oneshot(request(Method::GET, "/", HOST, &[], None))
-            .await
-            .unwrap();
+        for (path, content_type) in [
+            ("/", "text/html; charset=utf-8"),
+            ("/app.js", JS_TYPE),
+            ("/xlsx.js", JS_TYPE),
+            ("/style.css", "text/css; charset=utf-8"),
+        ] {
+            let response = f
+                .app
+                .clone()
+                .oneshot(request(Method::GET, path, HOST, &[], None))
+                .await
+                .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response
-                .headers()
-                .get(header::CONTENT_SECURITY_POLICY)
-                .unwrap(),
-            CSP
-        );
-        assert_eq!(
-            response.headers().get(header::CACHE_CONTROL).unwrap(),
-            "no-store"
+            let headers = response.headers();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), content_type);
+            assert_eq!(headers.get(header::CONTENT_SECURITY_POLICY).unwrap(), CSP);
+            assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+        }
+        let at = |file: &str| INDEX.find(file).unwrap();
+        assert!(
+            at("/xlsx.js") < at("/app.js"),
+            "the page loads the writer before the code that uses it"
         );
     }
 

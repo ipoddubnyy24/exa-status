@@ -17,6 +17,10 @@ const POLL_IDLE_MS = 60000;
 const PRIORITY_RANK = { blocker: 0, critical: 1, major: 2 };
 const FIX_STATE = { delivered: "Delivered", under_way: "Under way", not_started: "Not started" };
 const CHANGE_HEADERS = { "X-EXA-Status": "1", "Content-Type": "application/json" };
+/** The columns of a blocker list, as its export names them. */
+const BLOCKER_COLUMNS = ["Key", "Summary", "Owner", "Reason"];
+/** How long a saved export stays readable for the browser's download. */
+const EXPORT_URL_MS = 60000;
 
 const ui = {
   snap: null,
@@ -244,10 +248,10 @@ function renderView(v) {
   if (v.kind === "customers") root.append(section("On track for the dates?", customerDates(v)));
   if (v.kind === "release") root.append(section("On track for the proposed dates?", tracks(v.tracks)));
   if (v.kind === "initiatives") root.append(section("On track for the proposed dates?", initiativeCards(v.initiatives)));
-  if (v.kind !== "initiatives") root.append(section("Immediate blockers", blockerList(v.id, v.blockers, BLOCKERS_SHOWN)));
+  if (v.kind !== "initiatives") root.append(section("Immediate blockers", blockerList(v.id, v.blockers, BLOCKERS_SHOWN, `${v.label} blockers`)));
   root.append(section(`All ${v.items.length} items`, itemTable(v), ITEMS_ID));
   const tests = v.tests?.length;
-  if (tests) root.append(section(`${tests} Test item${tests > 1 ? "s" : ""}`, itemTable(v, v.tests, `${v.id}:tests`, "Filter Test items")));
+  if (tests) root.append(section(`${tests} Test item${tests > 1 ? "s" : ""}`, itemTable(v, { items: v.tests, stateId: `${v.id}:tests`, name: "Test items" })));
   return root;
 }
 
@@ -319,7 +323,7 @@ function initiativeCards(cards) {
   return el("div", { class: "tracks" }, cards.map((c, i) => trackCard(c.track, el("div", { class: "card-extra" },
     c.epics.length ? el("div", { class: "epics" }, el("span", { class: "kpi-label" }, "Epics: "),
       c.epics.map((e, j) => el("span", { title: `${e.summary} (${e.status}${e.owner ? `, ${e.owner}` : ""})` }, j ? ", " : "", link(e.url, e.key)))) : null,
-    c.blockers.length ? blockerList(`card-${i}`, c.blockers, CARD_BLOCKERS_SHOWN) : el("p", { class: "kpi-note" }, "No blockers.")))));
+    c.blockers.length ? blockerList(`card-${i}`, c.blockers, CARD_BLOCKERS_SHOWN, `${c.track.name} blockers`) : el("p", { class: "kpi-note" }, "No blockers.")))));
 }
 
 function customerDates(v) {
@@ -364,22 +368,66 @@ function datesSetIn(v) {
   return labels.length ? `the ${labels.join(" and ")} view${labels.length > 1 ? "s" : ""}` : "";
 }
 
-function blockerList(id, list, shown) {
+/** The top `shown` blockers, or all when asked for, and the exports of those
+ * shown; `name` names the list in the export. */
+function blockerList(id, list, shown, name) {
   if (!list.length) return el("p", { class: "muted" }, "None.");
   const all = ui.expanded.has(id);
   const visible = all ? list : list.slice(0, shown);
-  const box = el("div", { class: "blockers" }, visible.map((b) => el("div", { class: "brow" },
+  const rows = visible.map((b) => el("div", { class: "brow" },
     link(b.url, b.key),
     el("span", { class: "sum", title: b.summary }, b.summary),
     el("span", { class: "muted" }, b.owner || "Unassigned"),
     el("span", { class: "reasons" },
       toneChip(b.tone, b.reason),
-      b.verification ? el("span", { class: "chip verify", title: b.verification }, "Awaiting verification") : null))));
-  if (list.length > shown) {
-    const toggle = () => { if (all) ui.expanded.delete(id); else ui.expanded.add(id); render(); };
-    box.append(el("p", { class: "more" }, el("button", { type: "button", onclick: toggle }, all ? `Show the top ${shown}` : `Show all ${list.length}`)));
-  }
-  return box;
+      b.verification ? el("span", { class: "chip verify", title: b.verification }, "Awaiting verification") : null)));
+  const toggle = () => { if (all) ui.expanded.delete(id); else ui.expanded.add(id); render(); };
+  return el("div", { class: "blockers" }, rows,
+    el("p", { class: "more" },
+      list.length > shown ? el("button", { type: "button", onclick: toggle }, all ? `Show the top ${shown}` : `Show all ${list.length}`) : null,
+      exportTools(name, {
+        header: BLOCKER_COLUMNS,
+        rows: () => rows.map((row) => [...row.children].map(shownText)),
+        keys: () => visible.map((b) => b.key),
+      })));
+}
+
+/** Today as YYYYMMDD, which every export's file name ends with. */
+function stamp() {
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** "EXA SD Test items" as "exa-sd-test-items". */
+const slug = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+/** Has the browser save `blob` as the file `name`. */
+function save(name, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = el("a", { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), EXPORT_URL_MS);
+}
+
+/** A cell's text as shown, without its buttons ("Edit", "Set"); pieces drawn
+ * apart, such as two patch chips, are kept apart by a space. */
+function shownText(node) {
+  const text = (n) => (!n.tagName ? n.textContent : n.tagName === "BUTTON" ? "" : [...n.childNodes].map(text).join(" "));
+  return text(node).replace(/\s+/g, " ").trim();
+}
+
+/** The two exports of a table named `label`, of the rows it shows at the
+ * click: every column (`header`, `rows()`) as .xlsx, or the ticket keys
+ * (`keys()`) as a Markdown list. */
+function exportTools(label, { header, rows, keys }) {
+  const file = (ext) => `${slug(label)}-${stamp()}.${ext}`;
+  const toXlsx = () => save(file("xlsx"), xlsxBlob(label, [header, ...rows()]));
+  const toMd = () => save(file("md"), new Blob([keys().map((k) => `- ${k}\n`).join("")], { type: "text/markdown" }));
+  return el("span", { class: "exports" },
+    el("button", { type: "button", "aria-label": `Export xlsx: ${label}`, onclick: toXlsx }, "Export xlsx"),
+    el("button", { type: "button", "aria-label": `Export keys (md): ${label}`, onclick: toMd }, "Export keys (md)"));
 }
 
 function patchCell(t) {
@@ -598,14 +646,16 @@ function clearFilter(v) {
   say(`Showing every ${kind}.`);
 }
 
-/** A table of `items`, the view's own unless given, with the search, sort and
- * filter kept under `stateId`. */
-function itemTable(v, items = v.items, stateId = v.id, searchLabel = "Filter items") {
+/** A table of `items` (the view's own unless given) called `name`, with the
+ * search, sort and filter kept under `stateId`, and the exports of the rows
+ * it shows. */
+function itemTable(v, { items = v.items, stateId = v.id, name = "items" } = {}) {
   const cols = columns(v);
   const st = tableState(stateId);
   const tbody = el("tbody", {});
   const head = el("tr", {});
   const count = el("span", { class: "muted" });
+  let shown = items;
   const draw = () => {
     const q = st.q.trim().toLowerCase();
     let rows = items;
@@ -623,6 +673,7 @@ function itemTable(v, items = v.items, stateId = v.id, searchLabel = "Filter ite
         return st.asc ? c : -c;
       });
     }
+    shown = rows;
     tbody.replaceChildren(...rows.map((t) => el("tr", { class: t.verification ? "awaiting" : null }, cols.map((c) => el("td", { class: c.cls || null }, c.cell(t))))));
     head.querySelectorAll("th").forEach((th, i) => {
       th.className = i === st.col ? `sorted${st.asc ? " asc" : ""}` : "";
@@ -631,15 +682,20 @@ function itemTable(v, items = v.items, stateId = v.id, searchLabel = "Filter ite
     count.textContent = q || st.only ? `${rows.length} of ${items.length} shown` : "";
   };
   cols.forEach((c, i) => head.append(el("th", { scope: "col", tabindex: "0", onclick: () => { st.asc = st.col === i ? !st.asc : true; st.col = i; draw(); }, onkeydown: (e) => { if (e.key === "Enter") e.target.click(); } }, c.label)));
-  const input = el("input", { type: "search", placeholder: "Filter by key, words, status, owner", value: st.q, "aria-label": searchLabel, oninput: (e) => { st.q = e.target.value; draw(); } });
+  const input = el("input", { type: "search", placeholder: "Filter by key, words, status, owner", value: st.q, "aria-label": `Filter ${name}`, oninput: (e) => { st.q = e.target.value; draw(); } });
   const filterChip = st.only
     ? el("span", { class: "filter-chip" },
       filterLabel(v, st.only),
       el("button", { type: "button", onclick: () => clearFilter(v) }, `Clear ${filterKind(st.only)} filter`))
     : null;
+  const exports = exportTools(`${v.label} ${name}`, {
+    header: cols.map((c) => c.label),
+    rows: () => [...tbody.querySelectorAll("tr")].map((tr) => [...tr.querySelectorAll("td")].map(shownText)),
+    keys: () => shown.map((t) => t.key),
+  });
   draw();
   return el("div", {},
-    el("div", { class: "table-tools" }, input, filterChip, count),
+    el("div", { class: "table-tools" }, input, filterChip, count, exports),
     el("div", { class: "table-wrap" }, el("table", {}, el("thead", {}, head), tbody)));
 }
 

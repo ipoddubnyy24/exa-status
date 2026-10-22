@@ -142,7 +142,9 @@ h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacin
 .brow .sum, .cell-sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brow .chip, .brow .reasons { justify-self: start; }
 .reasons { display: flex; flex-wrap: wrap; gap: 4px; }
-.more { margin: 8px 0; }
+.more { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.exports { display: inline-flex; gap: 6px; margin-left: auto; }
+.exports button { font-size: 12px; }
 
 .flash { max-width: 1280px; margin: 0 auto; padding: 0 20px; min-height: 18px; font-size: 12px; color: var(--muted); }
 .meta select { font: inherit; font-size: 12px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px 6px; }

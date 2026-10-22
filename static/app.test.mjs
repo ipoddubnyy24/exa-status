@@ -1,7 +1,8 @@
-// Tests for the page logic in app.js. Each test loads app.js unchanged into
-// its own vm context, with a fake DOM holding only what the page uses and a
-// fake dashboard server, then drives the page as a person would: pressing
-// buttons and reading the table. Run with:
+// Tests for the page logic in app.js. Each test loads the page's scripts
+// unchanged, in index.html's order, into its own vm context, with a fake DOM
+// holding only what the page uses and a fake dashboard server, then drives
+// the page as a person would: pressing buttons and reading the table and the
+// files it saves. Run with:
 //
 //     node --test static/
 
@@ -11,8 +12,10 @@ import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import vm from "node:vm";
 
-const APP_JS = readFileSync(new URL("app.js", import.meta.url), "utf8");
 const INDEX_HTML = readFileSync(new URL("index.html", import.meta.url), "utf8");
+/** The scripts index.html loads, in its order, as [file, source]. */
+const SCRIPTS = [...INDEX_HTML.matchAll(/<script src="\/([\w.]+)"><\/script>/g)]
+  .map(([, file]) => [file, readFileSync(new URL(file, import.meta.url), "utf8")]);
 /** The page's own names the tests use besides the DOM. */
 const PAGE_NAMES = "ui, loadStatus, applyCommitment, fmtDate, stale, sevPri, idleSort, sameFilter, filterKeys, filterLabel";
 
@@ -54,6 +57,10 @@ class FakeNode {
     let node = this;
     while (node.parentNode) node = node.parentNode;
     return node instanceof FakeDocument;
+  }
+
+  get children() {
+    return this.childNodes.filter((child) => child instanceof FakeElement);
   }
 
   /** How a failed assertion shows a node: briefly, not with the whole document it links to,
@@ -142,7 +149,11 @@ class FakeElement extends FakeNode {
     for (const listener of this.listeners.get(type) ?? []) listener({ type, target: this });
   }
 
+  /** As in a browser, a link with `download` saves its target instead of opening it. */
   click() {
+    if (this.tagName === "A" && this.getAttribute("download") !== null) {
+      this.ownerDocument.downloads.push({ name: this.getAttribute("download"), url: this.getAttribute("href") });
+    }
     this.dispatch("click");
   }
 
@@ -158,16 +169,21 @@ class FakeElement extends FakeNode {
   }
 }
 
-/** The page's document: the elements of index.html that have an id, which is how app.js finds them. */
+/** The page's document: a body with the elements of index.html that have an
+ * id, which is how app.js finds them. */
 class FakeDocument extends FakeNode {
   activeElement = null;
+  /** The files links saved, oldest first: { name, url }. */
+  downloads = [];
 
   constructor() {
     super();
+    this.body = this.createElement("body");
+    this.append(this.body);
     for (const [, tag, id] of INDEX_HTML.matchAll(/<(\w+) id="([\w-]+)"/g)) {
       const element = this.createElement(tag);
       element.setAttribute("id", id);
-      this.append(element);
+      this.body.append(element);
     }
   }
 
@@ -398,9 +414,10 @@ const exa7Of = (snapshot) => snapshot.tabs[1].views[0];
  * turn of the event loop runs every pending request to its end. */
 const settled = () => new Promise((resolve) => setImmediate(resolve));
 
-/** Loads app.js as index.html does, in a fresh context, and waits for its first render. */
+/** Loads the page's scripts as index.html does, in a fresh context, and waits for its first render. */
 async function openPage(server = new FakeServer(sampleSnapshot())) {
   const document = new FakeDocument();
+  const blobs = new Map();
   const context = vm.createContext({
     document,
     Node: FakeNode,
@@ -408,10 +425,22 @@ async function openPage(server = new FakeServer(sampleSnapshot())) {
     // The page polls the server on a timer; the tests poll by hand (`publish`).
     setTimeout: () => 0,
     clearTimeout: () => {},
+    Blob,
+    TextEncoder,
+    URL: {
+      createObjectURL: (blob) => {
+        const url = `blob:${blobs.size}`;
+        blobs.set(url, blob);
+        return url;
+      },
+      revokeObjectURL: () => {},
+    },
   });
-  vm.runInContext(APP_JS, context, { filename: "static/app.js" });
+  for (const [file, source] of SCRIPTS) vm.runInContext(source, context, { filename: `static/${file}` });
   await settled();
-  return { ...vm.runInContext(`({ ${PAGE_NAMES} })`, context), document, server };
+  /** The files the page saved, oldest first: { name, blob }. */
+  const saved = () => document.downloads.map(({ name, url }) => ({ name, blob: blobs.get(url) }));
+  return { ...vm.runInContext(`({ ${PAGE_NAMES} })`, context), document, server, saved };
 }
 
 /** Makes `snapshot` the server's newer one and has the page poll for it. */
@@ -878,6 +907,12 @@ test("a release view lists its Test items in a table of their own, below the oth
 
   assert.deepEqual(sectionRows(page, "2 Test items"), ["EX-17000"]);
   assert.deepEqual(rows(page), ["EX-15181", "EX-16104", "EX-15711"], "each table searches on its own");
+
+  await press(page, "Export keys (md): EXA7 GA Test items");
+
+  const [md] = page.saved();
+  assert.match(md.name, /^exa7-ga-test-items-\d{8}\.md$/);
+  assert.equal(await md.blob.text(), "- EX-17000\n", "each table exports its own rows");
 });
 
 /** A blocker as the server writes it. */
@@ -919,4 +954,68 @@ test("a ticket whose fix awaits verification is highlighted with what says so, i
   assert.equal(rowOf(page, "EX-15181").getAttribute("class"), "awaiting");
   assert.equal(cell(page, "EX-15181", "Status").textContent, "Awaiting Verification", "a status that says so shows once");
   assert.equal(cell(page, "EX-15181", "Status").querySelectorAll(".verify").length, 1);
+});
+
+/** The files of an uncompressed zip, by name, as text. */
+function unzip(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const text = (from, length) => new TextDecoder().decode(bytes.subarray(from, from + length));
+  const files = {};
+  for (let at = 0; view.getUint32(at, true) === 0x04034b50;) {
+    const size = view.getUint32(at + 18, true);
+    const nameLength = view.getUint16(at + 26, true);
+    const start = at + 30 + nameLength + view.getUint16(at + 28, true);
+    files[text(at + 30, nameLength)] = text(start, size);
+    at = start + size;
+  }
+  return files;
+}
+
+/** The sheet name and the rows of cell text of a saved .xlsx. */
+async function workbook(blob) {
+  const files = unzip(new Uint8Array(await blob.arrayBuffer()));
+  const unescape = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+  const rows = [...files["xl/worksheets/sheet1.xml"].matchAll(/<row [^>]*>(.*?)<\/row>/g)]
+    .map(([, row]) => [...row.matchAll(/<t xml:space="preserve">(.*?)<\/t>/g)].map(([, text]) => unescape(text)));
+  return { sheet: unescape(files["xl/workbook.xml"].match(/<sheet name="([^"]*)"/)[1]), rows };
+}
+
+test("a table exports the rows it shows: every column as xlsx, the keys as md", async () => {
+  const page = await openPage();
+  await press(page, WHAMCLOUD);
+
+  await press(page, "Export xlsx: NVIDIA items");
+  await press(page, "Export keys (md): NVIDIA items");
+
+  const [xlsx, md] = page.saved();
+  const { sheet, rows: sheetRows } = await workbook(xlsx.blob);
+  assert.match(xlsx.name, /^nvidia-items-\d{8}\.xlsx$/);
+  assert.equal(sheet, "NVIDIA items");
+  assert.deepEqual(sheetRows[0], ["Key", "Summary", "Source", "Status", "Sev / Pri", "Owner", "Idle", "Date", "Fix", "Patches"]);
+  assert.deepEqual(sheetRows.slice(1).map((row) => row[0]), ["NCP-163 also NP-131", "NVDCSE-250", "NVDCSE-248", "NVDCSE-216", "NCP-9"]);
+  assert.deepEqual(sheetRows[1].slice(6, 8), ["3d", "1 Nov 2026 committed on NP-131"], "as shown, without the Edit button");
+  assert.match(md.name, /^nvidia-items-\d{8}\.md$/);
+  assert.equal(await md.blob.text(), "- NCP-163\n- NVDCSE-250\n- NVDCSE-248\n- NVDCSE-216\n- NCP-9\n");
+});
+
+test("a blocker list exports the blockers it shows", async () => {
+  const snap = sampleSnapshot();
+  nvidiaOf(snap).blockers = Array.from({ length: 12 }, (_, i) =>
+    blockerOf(`DDN-${8000 + i}`, "Blocker", i ? null : "Awaiting Verification"));
+  const page = await openPage(new FakeServer(snap));
+
+  await press(page, "Export xlsx: NVIDIA blockers");
+  await press(page, "Export keys (md): NVIDIA blockers");
+  await press(page, "Show all 12");
+  await press(page, "Export keys (md): NVIDIA blockers");
+
+  const [xlsx, top, all] = page.saved();
+  const { rows: sheetRows } = await workbook(xlsx.blob);
+  const keys = async (file) => (await file.blob.text()).split("\n").filter(Boolean).length;
+  assert.match(xlsx.name, /^nvidia-blockers-\d{8}\.xlsx$/);
+  assert.deepEqual(sheetRows[0], ["Key", "Summary", "Owner", "Reason"]);
+  assert.deepEqual(sheetRows[1], ["DDN-8000", "DDN-8000 summary", "Unassigned", "Blocker Awaiting verification"]);
+  assert.equal(sheetRows.length, 11, "the header and the top 10 shown");
+  assert.equal(await keys(top), 10);
+  assert.equal(await keys(all), 12, "all 12 once all are shown");
 });
