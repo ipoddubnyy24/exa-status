@@ -478,6 +478,8 @@ pub(crate) struct SourceCount {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DateSource {
+    /// A release date set in the dashboard's config (`release_dates`).
+    Agreed,
     /// The weekly PM status page in Confluence.
     PmPage,
     /// A Jira fixVersion release date or epic due date.

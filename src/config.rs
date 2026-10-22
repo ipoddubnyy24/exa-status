@@ -5,6 +5,7 @@
 //! every value is checked at load, before any network I/O.
 
 use anyhow::{Context, Result, bail, ensure};
+use chrono::NaiveDate;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +44,12 @@ const VERIFY_STATUSES: [&str; 4] = [
 const AWAITING_VERIFICATION: &str = "awaiting verification";
 /// The label NVDCSE tickets carry while their fix waits for validation.
 const AWAITING_VALIDATION_LABEL: &str = "awaiting_validation";
+/// The ES6.3.10 release date Ivan set on 22 Oct 2026; Jira and the PM page
+/// said otherwise. Checked when compiled, so it cannot panic at run time.
+const ES6_3_10_RELEASE: NaiveDate = match NaiveDate::from_ymd_opt(2027, 1, 27) {
+    Some(date) => date,
+    None => panic!("ES6_3_10_RELEASE is not a date"),
+};
 
 /// Jira projects whose open tickets feed the customer tabs.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -276,6 +283,10 @@ pub(crate) struct Config {
     /// release counts the filter's open issues and its closures in the window
     /// instead of every item in the version.
     pub(crate) scope_filters: BTreeMap<String, u64>,
+    /// Release dates agreed outside Jira and the PM pages, by the name a
+    /// release's card shows (for EXA6, its fixVersion). Its verdict is
+    /// measured against this date before the PM page's and Jira's.
+    pub(crate) release_dates: BTreeMap<String, NaiveDate>,
     /// EXA SD's Jira project.
     pub(crate) exa_sd_project: String,
     /// EXA SD phase fixVersions start with this.
@@ -440,6 +451,7 @@ impl Default for Config {
             exa7_ga_versions: strings(&["ES7.0.0", "ES7.1.0"]),
             // "EX 6.3.10 scope", Manish Agrawal's filter, chosen on 22 Oct 2026.
             scope_filters: BTreeMap::from([("ES6.3.10".into(), 49208)]),
+            release_dates: BTreeMap::from([("ES6.3.10".into(), ES6_3_10_RELEASE)]),
             exa_sd_project: "EXM".into(),
             exa_sd_phase_prefix: "NVMesh-P".into(),
             exa_sd_pm_phase: "NVMesh-P2".into(),
@@ -824,6 +836,22 @@ mod tests {
             cfg.priority_severity.projects,
             PrioritySeverity::default().projects
         );
+    }
+
+    #[test]
+    fn release_dates_are_set_in_the_config_file_as_iso_dates() {
+        let date = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+
+        assert_eq!(
+            Config::default().release_dates.get("ES6.3.10"),
+            Some(&date(2027, 1, 27))
+        );
+        let set = Config::parse(r#"{"release_dates": {"ES6.3.10": "2027-02-01"}}"#).unwrap();
+        assert_eq!(
+            set.release_dates,
+            BTreeMap::from([("ES6.3.10".to_string(), date(2027, 2, 1))])
+        );
+        assert!(Config::parse(r#"{"release_dates": {"ES6.3.10": "27 Jan 2027"}}"#).is_err());
     }
 
     #[test]

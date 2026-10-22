@@ -138,11 +138,13 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   ("EX 6.3.10 scope"). Its view lists only those items for that release and
   says how many it leaves out; if the filter cannot be read, the release
   counts every item and its view reads as incomplete data.
-- Verdict: measured against the PM status page date, else the Jira fixVersion
-  date. Up to `late_tolerance_days` late is at risk, later is off track. PM
-  and Jira dates more than `date_gap_days` apart are flagged and turn on track
-  into at risk. Releases and initiatives with `small_release_max` or fewer
-  open items are judged per item.
+- Verdict: measured against the agreed release date (`release_dates`, by the
+  name the release's card shows; ES6.3.10: 27 Jan 2027), else the PM status
+  page date, else the Jira fixVersion date. Up to `late_tolerance_days` late
+  is at risk, later is off track. PM and Jira dates more than `date_gap_days`
+  apart are flagged and, unless a date is agreed, turn on track into at
+  risk. Releases and initiatives with `small_release_max` or fewer open items
+  are judged per item.
 - Incomplete data: when data a view's verdict depends on was not read, that
   view (and only that view) reads at best at risk and says so. That covers a
   customer source (in the views its projects feed), issues of a list that

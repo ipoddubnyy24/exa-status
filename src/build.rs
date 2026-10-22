@@ -654,6 +654,7 @@ impl<'a> Context<'a> {
                 pm_unread,
                 jira_date,
                 start_date,
+                agreed_date: self.cfg.release_dates.get(spec.name).copied(),
             },
         );
         if !missing.is_empty() {
@@ -996,6 +997,7 @@ impl<'a> Context<'a> {
                 pm_unread,
                 jira_date,
                 start_date: None,
+                agreed_date: self.cfg.release_dates.get(&data.config.name).copied(),
             },
         );
         let card = InitiativeCard {
@@ -1113,7 +1115,7 @@ mod tests {
     use crate::config::InitiativeConfig;
     use crate::confluence::LabelledDate;
     use crate::fetch::{Note, Scope};
-    use crate::model::{ChangeStatus, HealthPart, Instance, LinkRef, PatchRef, PmRef};
+    use crate::model::{ChangeStatus, DateSource, HealthPart, Instance, LinkRef, PatchRef, PmRef};
     use crate::rules::tests::{d, idle, ticket, today};
     use url::Url;
 
@@ -1885,6 +1887,36 @@ mod tests {
         assert!(
             view(&snap, EXA_SD).blockers.is_empty(),
             "the Blocker test case is not a blocker"
+        );
+    }
+
+    #[test]
+    fn a_release_is_judged_against_its_agreed_date() {
+        let snap = build(&raw());
+        let track = |name: &str| {
+            view(&snap, EXA6)
+                .tracks
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| (t.ref_source, t.ref_date, t.jira_date))
+        };
+
+        assert_eq!(
+            track("ES6.3.10"),
+            Some((
+                Some(DateSource::Agreed),
+                Some(d(2027, 1, 27)),
+                Some(d(2026, 12, 15))
+            ))
+        );
+        assert_eq!(
+            track("ES6.3.9_C1"),
+            Some((
+                Some(DateSource::Jira),
+                Some(d(2026, 11, 6)),
+                Some(d(2026, 11, 6))
+            )),
+            "a release without one keeps the PM page or Jira date"
         );
     }
 

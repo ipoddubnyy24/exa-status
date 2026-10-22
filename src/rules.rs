@@ -278,9 +278,12 @@ pub(crate) struct TrackInput<'a> {
     pub(crate) jira_date: Option<NaiveDate>,
     /// Start date in Jira.
     pub(crate) start_date: Option<NaiveDate>,
+    /// The release date agreed outside Jira and the PM page (`release_dates`).
+    pub(crate) agreed_date: Option<NaiveDate>,
 }
 
-/// Projects the work and judges it against the PM page date, else the Jira date.
+/// Projects the work and judges it against the agreed release date, else
+/// the PM page date, else the Jira date.
 pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'_>) -> Track {
     let open = input.items.len();
     let weighted: f64 = input
@@ -290,10 +293,11 @@ pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'
         .sum();
     let per_week = input.closed_in_window as f64 * 7.0 / cfg.closed_window_days as f64;
     let projection = projected(today, weighted, per_week);
-    let (ref_date, ref_source) = match (input.pm_date, input.jira_date) {
-        (Some(d), _) => (Some(d), Some(DateSource::PmPage)),
-        (None, Some(d)) => (Some(d), Some(DateSource::Jira)),
-        (None, None) => (None, None),
+    let (ref_date, ref_source) = match (input.agreed_date, input.pm_date, input.jira_date) {
+        (Some(d), _, _) => (Some(d), Some(DateSource::Agreed)),
+        (None, Some(d), _) => (Some(d), Some(DateSource::PmPage)),
+        (None, None, Some(d)) => (Some(d), Some(DateSource::Jira)),
+        (None, None, None) => (None, None),
     };
     let gap_days = input
         .pm_date
@@ -307,6 +311,7 @@ pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'
         ),
     };
     let source_text = match ref_source {
+        Some(DateSource::Agreed) => "agreed date",
         Some(DateSource::PmPage) => "PM page",
         Some(DateSource::Jira) | None => "Jira",
     };
@@ -360,10 +365,17 @@ pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'
                     } else {
                         Verdict::OffTrack
                     };
+                    let days = |n: i64| {
+                        if n == 1 {
+                            "1 day".to_string()
+                        } else {
+                            format!("{n} days")
+                        }
+                    };
                     let how = if late <= 0 {
-                        format!("{} days early", -late)
+                        format!("{} early", days(-late))
                     } else {
-                        format!("{late} days late")
+                        format!("{} late", days(late))
                     };
                     (
                         v,
@@ -385,8 +397,9 @@ pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'
 
     let gap_flagged = gap_days.is_some_and(|g| g > cfg.date_gap_days);
     if let Some(gap) = gap_days.filter(|_| gap_flagged) {
-        // Two dates for the same work a week or more apart: the plan itself is unsettled.
-        if verdict == Verdict::OnTrack && open > 0 {
+        // Two dates for the same work a week or more apart: the plan itself is
+        // unsettled, unless a date was agreed; then the two are only out of date.
+        if verdict == Verdict::OnTrack && open > 0 && ref_source != Some(DateSource::Agreed) {
             verdict = Verdict::AtRisk;
         }
         reason = format!("{reason}. PM page and Jira dates are {gap} days apart");
@@ -958,6 +971,7 @@ pub(crate) mod tests {
             pm_unread: false,
             jira_date: jira,
             start_date: None,
+            agreed_date: None,
         }
     }
 
@@ -968,7 +982,9 @@ pub(crate) mod tests {
 
     // 20 items "In Review" weigh 6.0; 28 closed in 28 days is 7 a week, so the projection is 27 Oct.
     #[test_case(28, Some(d(2026, 11, 30)), Verdict::OnTrack, "Projected 27 Oct 2026 against 30 Nov 2026 (PM page), 34 days early" ; "early")]
+    #[test_case(28, Some(d(2026, 10, 28)), Verdict::OnTrack, "Projected 27 Oct 2026 against 28 Oct 2026 (PM page), 1 day early" ; "one day early")]
     #[test_case(28, Some(d(2026, 10, 22)), Verdict::AtRisk, "Projected 27 Oct 2026 against 22 Oct 2026 (PM page), 5 days late" ; "a little late")]
+    #[test_case(28, Some(d(2026, 10, 26)), Verdict::AtRisk, "Projected 27 Oct 2026 against 26 Oct 2026 (PM page), 1 day late" ; "one day late")]
     #[test_case(4, Some(d(2026, 10, 25)), Verdict::OffTrack, "Projected 2 Dec 2026 against 25 Oct 2026 (PM page), 38 days late" ; "far too late")]
     #[test_case(28, Some(d(2026, 10, 20)), Verdict::OffTrack, "Target 20 Oct 2026 passed with 20 open" ; "date passed")]
     #[test_case(0, Some(d(2027, 1, 1)), Verdict::OffTrack, "Nothing closed in the last 28 days" ; "nothing closed")]
@@ -980,6 +996,44 @@ pub(crate) mod tests {
         let track = evaluate_track(&Config::default(), today(), input(&items, closed, pm, None));
 
         assert_eq!((track.verdict, track.reason.as_str()), (expected, reason));
+    }
+
+    #[test]
+    fn an_agreed_date_outranks_the_pm_page_and_jira_and_settles_their_gap() {
+        let items = large("In Review", Category::Indeterminate);
+        // 39 days apart, so a gap flag.
+        let (pm, jira) = (Some(d(2026, 10, 22)), Some(d(2026, 11, 30)));
+        let judge = |agreed_date| {
+            let input = TrackInput {
+                agreed_date,
+                ..input(&items, 28, pm, jira)
+            };
+            evaluate_track(&Config::default(), today(), input)
+        };
+
+        let agreed = judge(Some(d(2026, 11, 2)));
+        let without = judge(None);
+
+        assert_eq!(
+            (agreed.ref_source, agreed.ref_date, agreed.verdict),
+            (
+                Some(DateSource::Agreed),
+                Some(d(2026, 11, 2)),
+                Verdict::OnTrack
+            )
+        );
+        assert_eq!(
+            agreed.reason,
+            "Projected 27 Oct 2026 against 2 Nov 2026 (agreed date), 6 days early. PM page and Jira dates are 39 days apart"
+        );
+        assert!(
+            agreed.gap_flagged,
+            "the out-of-date sources are still pointed out"
+        );
+        assert_eq!(
+            (without.ref_source, without.verdict),
+            (Some(DateSource::PmPage), Verdict::AtRisk)
+        );
     }
 
     #[test]

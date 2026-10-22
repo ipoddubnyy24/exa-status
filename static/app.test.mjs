@@ -1019,3 +1019,40 @@ test("a blocker list exports the blockers it shows", async () => {
   assert.equal(await keys(top), 10);
   assert.equal(await keys(all), 12, "all 12 once all are shown");
 });
+
+/** A release track as the server writes it, with the fields its card reads. */
+const track = (name, fields) => ({
+  name,
+  open: 164,
+  weighted: 95.4,
+  closed_per_week: 7,
+  projected: "2027-01-26",
+  pm_date: "2027-01-18",
+  pm: null,
+  pm_unread: false,
+  jira_date: "2026-12-15",
+  start_date: null,
+  ref_date: "2027-01-18",
+  ref_source: "pm_page",
+  gap_flagged: true,
+  verdict: "at_risk",
+  reason: "",
+  per_item: false,
+  ...fields,
+});
+
+test("a release card shows the agreed release date first, when the verdict uses one", async () => {
+  const snap = sampleSnapshot();
+  exa7Of(snap).tracks = [track("ES6.3.10", { ref_date: "2027-01-27", ref_source: "agreed" }), track("ES6.3.9_C1")];
+  const page = await openPage(new FakeServer(snap));
+  await press(page, "Development");
+
+  const cards = page.document.querySelectorAll("#view .track").map((card) =>
+    card.querySelectorAll(".kpi-label").map((label) => label.textContent));
+
+  assert.deepEqual(cards, [
+    ["Release date", "PM status page", "Jira", "Projected at current rate"],
+    ["PM status page", "Jira", "Projected at current rate"],
+  ]);
+  assert.match(page.document.querySelector("#view .track .dates").textContent, /^Release date27 Jan 2027agreed; the verdict uses it/);
+});

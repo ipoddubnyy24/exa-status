@@ -306,6 +306,7 @@ function trackCard(t, extra) {
       el("span", { class: "muted" }, `${t.open} open, ${t.weighted} weighted`),
       chip(t.verdict)),
     el("div", { class: "dates" },
+      t.ref_source === "agreed" ? dateCell("Release date", t.ref_date, "agreed; the verdict uses it") : null,
       dateCell("PM status page", t.pm_date, pmNote, t.pm ? t.pm.url : null),
       dateCell("Jira", t.jira_date, t.start_date ? `starts ${fmtDate(t.start_date)}` : ""),
       dateCell("Projected at current rate", t.projected, projNote)),
