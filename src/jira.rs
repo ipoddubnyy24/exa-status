@@ -22,7 +22,7 @@ const SITE_FIELD: &str = "customfield_16133";
 /// the newest human comment is read separately, only where idle time matters.
 static FIELDS: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "summary,status,priority,assignee,issuetype,created,updated,duedate,fixVersions,issuelinks,{SEVERITY_FIELD},{SITE_FIELD}"
+        "summary,status,priority,assignee,issuetype,created,updated,duedate,fixVersions,issuelinks,labels,{SEVERITY_FIELD},{SITE_FIELD}"
     )
 });
 /// Instance names in `~/.jira-tool.json`.
@@ -394,6 +394,17 @@ pub(crate) fn ticket_from(issue: &Value, instance: Instance, base: &Url) -> Resu
         fix_state: FixState::NoFix,
         committed: None,
         patches: Vec::new(),
+        labels: fields
+            .get("labels")
+            .and_then(Value::as_array)
+            .map(|ls| {
+                ls.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        verification: None,
         key,
         instance,
     })
@@ -527,6 +538,7 @@ mod tests {
                 "updated": "2026-10-16T10:00:00.000-0700",
                 "duedate": "2026-11-06",
                 "fixVersions": [{"name": "ES6.3.10"}],
+                "labels": ["awaiting_validation", "nvidia"],
                 "issuelinks": [
                     {"type": {"inward": "is blocked by", "outward": "blocks"},
                      "inwardIssue": {"key": "EX-15945", "fields": {"status": {"statusCategory": {"key": "indeterminate"}}}}},
@@ -580,6 +592,8 @@ mod tests {
             fix_state: FixState::NoFix,
             committed: None,
             patches: vec![],
+            labels: vec!["awaiting_validation".into(), "nvidia".into()],
+            verification: None,
         };
         assert_eq!(t, expected);
     }

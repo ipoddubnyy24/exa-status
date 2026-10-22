@@ -271,6 +271,8 @@ function ticket(key, fields) {
     fix_state: "no_fix",
     committed: null,
     patches: [],
+    labels: [],
+    verification: null,
     ...fields,
   };
 }
@@ -876,4 +878,45 @@ test("a release view lists its Test items in a table of their own, below the oth
 
   assert.deepEqual(sectionRows(page, "2 Test items"), ["EX-17000"]);
   assert.deepEqual(rows(page), ["EX-15181", "EX-16104", "EX-15711"], "each table searches on its own");
+});
+
+/** A blocker as the server writes it. */
+const blockerOf = (key, reason, verification = null) => ({
+  key,
+  url: `https://jira.example/browse/${key}`,
+  summary: `${key} summary`,
+  owner: null,
+  reason,
+  tone: "danger",
+  verification,
+});
+
+/** The row of ticket `key` in the "All items" table. */
+const rowOf = (page, key) => page.document.querySelectorAll("#items tbody tr").find((tr) => tr.querySelector("a").textContent === key);
+
+/** Each blocker's key with the text of its chips. */
+const blockerChips = (page) => Object.fromEntries(page.document.querySelectorAll("#view .brow")
+  .map((row) => [row.querySelector("a").textContent, row.querySelectorAll(".reasons .chip").map((c) => c.textContent)]));
+
+test("a ticket whose fix awaits verification is highlighted with what says so, in the table and among the blockers", async () => {
+  const snap = sampleSnapshot();
+  const nvidia = nvidiaOf(snap);
+  Object.assign(nvidia.items.find((t) => t.key === "NVDCSE-250"), { labels: ["awaiting_validation"], verification: "awaiting_validation" });
+  nvidia.blockers = [blockerOf("NVDCSE-250", "S2 (Major), idle 40d", "awaiting_validation"), blockerOf("DDN-7162", "S1, idle unknown")];
+  Object.assign(exa7Of(snap).items.find((t) => t.key === "EX-15181"), { status: "Awaiting Verification", verification: "Awaiting Verification" });
+  const page = await openPage(new FakeServer(snap));
+
+  assert.equal(rowOf(page, "NVDCSE-250").getAttribute("class"), "awaiting");
+  assert.equal(rowOf(page, "NCP-163").getAttribute("class"), null);
+  assert.equal(cell(page, "NVDCSE-250", "Status").textContent, "In Progress awaiting_validation", "a label shows beside the status");
+  assert.deepEqual(blockerChips(page), {
+    "NVDCSE-250": ["S2 (Major), idle 40d", "Awaiting verification"],
+    "DDN-7162": ["S1, idle unknown"],
+  });
+
+  await press(page, "Development");
+
+  assert.equal(rowOf(page, "EX-15181").getAttribute("class"), "awaiting");
+  assert.equal(cell(page, "EX-15181", "Status").textContent, "Awaiting Verification", "a status that says so shows once");
+  assert.equal(cell(page, "EX-15181", "Status").querySelectorAll(".verify").length, 1);
 });

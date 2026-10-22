@@ -157,3 +157,8 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
 - Test cases (issue type Test) are not counted as release blockers or in
   EXA SD's open scope. A release view lists them in a table of their own,
   below the other items.
+- Awaiting verification: a ticket whose status is in
+  `verification_statuses` (Awaiting Verification) or that carries a label in
+  `verification_labels` (awaiting_validation, which NVDCSE tickets use) is
+  highlighted in the item tables, with that status or label as a pill; as
+  an immediate blocker it is marked "Awaiting verification".

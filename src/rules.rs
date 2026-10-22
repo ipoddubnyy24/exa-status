@@ -220,6 +220,19 @@ pub(crate) fn is_test_case(t: &Ticket) -> bool {
     t.issue_type.eq_ignore_ascii_case(TEST_CASE)
 }
 
+/// The status or label that says the ticket's fix awaits verification, as
+/// the ticket writes it.
+pub(crate) fn verification(cfg: &Config, t: &Ticket) -> Option<String> {
+    let listed = |list: &[String], text: &str| list.iter().any(|s| s.eq_ignore_ascii_case(text));
+    if listed(&cfg.verification_statuses, &t.status) {
+        return Some(t.status.clone());
+    }
+    t.labels
+        .iter()
+        .find(|l| listed(&cfg.verification_labels, l))
+        .cloned()
+}
+
 /// The ticket's fixes: linked `fix_projects` tickets, except through a relation
 /// in `non_fix_relations`.
 pub(crate) fn fix_keys<'a>(
@@ -543,7 +556,7 @@ enum Rule {
     DatePassed,
 }
 
-fn blocker(t: &Ticket, reason: String, tone: Tone) -> Blocker {
+fn blocker(cfg: &Config, t: &Ticket, reason: String, tone: Tone) -> Blocker {
     Blocker {
         key: t.key.clone(),
         url: t.url.clone(),
@@ -551,6 +564,7 @@ fn blocker(t: &Ticket, reason: String, tone: Tone) -> Blocker {
         owner: t.assignee.clone(),
         reason,
         tone,
+        verification: verification(cfg, t),
     }
 }
 
@@ -621,7 +635,7 @@ pub(crate) fn customer_blockers(
             } else {
                 return None;
             };
-            Some((rule, idle, blocker(t, reason, tone)))
+            Some((rule, idle, blocker(cfg, t, reason, tone)))
         })
         .collect();
     ranked(found)
@@ -660,7 +674,7 @@ pub(crate) fn release_blockers(
                     Tone::Warning,
                 )
             };
-            Some((rule, idle, blocker(t, reason, tone)))
+            Some((rule, idle, blocker(cfg, t, reason, tone)))
         })
         .collect();
     ranked(found)
@@ -719,6 +733,8 @@ pub(crate) mod tests {
             fix_state: FixState::NoFix,
             committed: None,
             patches: vec![],
+            labels: vec![],
+            verification: None,
         }
     }
 
@@ -753,6 +769,21 @@ pub(crate) mod tests {
             relation: relation.into(),
             done,
         }
+    }
+
+    #[test_case("Awaiting Verification", &[], Some("Awaiting Verification") ; "status, any case")]
+    #[test_case("In Progress", &["nvidia", "Awaiting_Validation"], Some("Awaiting_Validation") ; "label, any case")]
+    #[test_case("Test Ready", &["nvidia"], None ; "other verify statuses and labels")]
+    fn verification_comes_from_the_status_or_a_label(
+        status: &str,
+        labels: &[&str],
+        expected: Option<&str>,
+    ) {
+        let mut t = ticket("NVDCSE-250", "Slow recovery");
+        t.status = status.into();
+        t.labels = labels.iter().map(ToString::to_string).collect();
+
+        assert_eq!(verification(&Config::default(), &t).as_deref(), expected);
     }
 
     #[test_case("DDN-7162", "Case 01349748 | NVIDIA | AI400X3i-BF3| HCAs missing", None, Bucket::Nvidia ; "case title names NVIDIA")]

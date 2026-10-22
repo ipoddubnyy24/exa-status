@@ -34,11 +34,15 @@ const VERIFY_WEIGHT: f64 = 0.15;
 /// Statuses of work in review, and of work being verified.
 const REVIEW_STATUSES: [&str; 2] = ["in review", "in code review"];
 const VERIFY_STATUSES: [&str; 4] = [
-    "awaiting verification",
+    AWAITING_VERIFICATION,
     "test ready",
     "test in progress",
     "test",
 ];
+/// The status of a fix that waits for someone to verify it.
+const AWAITING_VERIFICATION: &str = "awaiting verification";
+/// The label NVDCSE tickets carry while their fix waits for validation.
+const AWAITING_VALIDATION_LABEL: &str = "awaiting_validation";
 
 /// Jira projects whose open tickets feed the customer tabs.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -224,6 +228,11 @@ pub(crate) struct Config {
     /// matter. Kept apart from `status_weights`, so retuning a weight does not
     /// change what this number counts.
     pub(crate) review_statuses: Vec<String>,
+    /// Statuses of a ticket whose fix awaits verification, which the page
+    /// marks; case does not matter.
+    pub(crate) verification_statuses: Vec<String>,
+    /// Labels that mark a ticket the same way; case does not matter.
+    pub(crate) verification_labels: Vec<String>,
     /// Comment authors that are bots, not people.
     pub(crate) bot_authors: Vec<String>,
     /// "Site Affected" values that mean NVIDIA.
@@ -388,6 +397,8 @@ impl Default for Config {
             closed_window_days: 28,
             status_weights: default_weights(),
             review_statuses: strings(&REVIEW_STATUSES).into_iter().chain(strings(&VERIFY_STATUSES)).collect(),
+            verification_statuses: strings(&[AWAITING_VERIFICATION]),
+            verification_labels: strings(&[AWAITING_VALIDATION_LABEL]),
             bot_authors: strings(&[
                 "Gerrit",
                 "Gerrit Updater",

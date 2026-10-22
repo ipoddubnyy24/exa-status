@@ -372,7 +372,9 @@ function blockerList(id, list, shown) {
     link(b.url, b.key),
     el("span", { class: "sum", title: b.summary }, b.summary),
     el("span", { class: "muted" }, b.owner || "Unassigned"),
-    toneChip(b.tone, b.reason))));
+    el("span", { class: "reasons" },
+      toneChip(b.tone, b.reason),
+      b.verification ? el("span", { class: "chip verify", title: b.verification }, "Awaiting verification") : null))));
   if (list.length > shown) {
     const toggle = () => { if (all) ui.expanded.delete(id); else ui.expanded.add(id); render(); };
     box.append(el("p", { class: "more" }, el("button", { type: "button", onclick: toggle }, all ? `Show the top ${shown}` : `Show all ${list.length}`)));
@@ -449,6 +451,13 @@ function customerDateCell(t, editable) {
 }
 
 const sevPri = (t) => (t.severity ? t.severity.label : t.priority || "");
+/** The status; a ticket whose fix awaits verification shows what says so,
+ * its status or a label, as a pill. */
+function statusCell(t) {
+  if (!t.verification) return t.status;
+  const pill = el("span", { class: "badge verify", title: "Awaiting verification" }, t.verification);
+  return t.verification === t.status ? pill : el("span", {}, t.status, " ", pill);
+}
 const unknownIdle = (t) => t.idle_days === null || t.idle_days === undefined;
 /** Idle time. Customer tickets are all read, so a missing one could not be
  * read and shows as unknown; release items are read only where a rule needs it. */
@@ -480,7 +489,7 @@ function columns(v) {
       { label: "Key", sort: (t) => t.key, cell: keyCell },
       summary,
       { label: "Source", sort: (t) => t.source || "", cell: (t) => t.source || "" },
-      { label: "Status", sort: (t) => t.status, cell: (t) => t.status },
+      { label: "Status", sort: (t) => t.status, cell: statusCell },
       { label: "Sev / Pri", sort: (t) => (t.severity ? t.severity.level : 9) * 10, cell: sevPri },
       { label: "Owner", sort: (t) => t.assignee || "", cell: (t) => t.assignee || "Unassigned" },
       { label: "Idle", sort: idleSort(true), cell: idleCell(true), cls: "num" },
@@ -494,7 +503,7 @@ function columns(v) {
     summary,
     { label: "Version", sort: (t) => t.fix_versions.join(", "), cell: (t) => t.fix_versions.join(", ") },
     { label: "Type", sort: (t) => t.issue_type, cell: (t) => t.issue_type },
-    { label: "Status", sort: (t) => t.status, cell: (t) => t.status },
+    { label: "Status", sort: (t) => t.status, cell: statusCell },
     { label: "Priority", sort: (t) => PRIORITY_RANK[(t.priority || "").toLowerCase()] ?? 3, cell: (t) => t.priority || "" },
     { label: "Owner", sort: (t) => t.assignee || "", cell: (t) => t.assignee || "Unassigned" },
     { label: "Due", sort: (t) => t.due || "9999", cell: (t) => (t.due ? fmtDate(t.due) : "") },
@@ -614,7 +623,7 @@ function itemTable(v, items = v.items, stateId = v.id, searchLabel = "Filter ite
         return st.asc ? c : -c;
       });
     }
-    tbody.replaceChildren(...rows.map((t) => el("tr", {}, cols.map((c) => el("td", { class: c.cls || null }, c.cell(t))))));
+    tbody.replaceChildren(...rows.map((t) => el("tr", { class: t.verification ? "awaiting" : null }, cols.map((c) => el("td", { class: c.cls || null }, c.cell(t))))));
     head.querySelectorAll("th").forEach((th, i) => {
       th.className = i === st.col ? `sorted${st.asc ? " asc" : ""}` : "";
       th.setAttribute("aria-sort", i === st.col ? (st.asc ? "ascending" : "descending") : "none");

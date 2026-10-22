@@ -278,9 +278,10 @@ struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    /// An item with its Gerrit changes.
+    /// An item with its Gerrit changes, and what says its fix awaits verification.
     fn item(&self, mut t: Ticket) -> Ticket {
         t.patches = self.patches.map.get(&t.key).cloned().unwrap_or_default();
+        t.verification = rules::verification(self.cfg, &t);
         t
     }
 
@@ -1412,6 +1413,47 @@ mod tests {
                 .map(|t| t.views.iter().map(|v| v.id).collect::<Vec<_>>()),
             Some(vec![ALL, OTHERS, GCP, NVIDIA])
         );
+    }
+
+    #[test]
+    fn tickets_awaiting_verification_say_so_in_the_tables_and_the_blocker_lists() {
+        let mut raw = raw();
+        if let Some(t) = raw.ex_open.iter_mut().find(|t| t.key.as_str() == "EX-1") {
+            t.status = "Awaiting Verification".into();
+        }
+        if let Some(t) = raw
+            .customers
+            .iter_mut()
+            .find(|t| t.key.as_str() == "GCP-315")
+        {
+            t.labels = vec!["awaiting_validation".into()];
+        }
+
+        let snap = build(&raw);
+        let verification = |id: ViewId, key: &str| item(&snap, id, key).verification.clone();
+        let blocker = view(&snap, EXA6)
+            .blockers
+            .iter()
+            .find(|b| b.key.as_str() == "EX-1")
+            .unwrap();
+
+        assert_eq!(
+            verification(EXA6, "EX-1").as_deref(),
+            Some("Awaiting Verification")
+        );
+        assert_eq!(
+            blocker.verification.as_deref(),
+            Some("Awaiting Verification")
+        );
+        assert_eq!(
+            verification(GCP, "GCP-315").as_deref(),
+            Some("awaiting_validation")
+        );
+        assert_eq!(
+            verification(ALL, "GCP-315").as_deref(),
+            Some("awaiting_validation")
+        );
+        assert_eq!(verification(NVIDIA, "DDN-7162"), None);
     }
 
     #[test]
