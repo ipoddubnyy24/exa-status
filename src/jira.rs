@@ -394,6 +394,7 @@ pub(crate) fn ticket_from(issue: &Value, instance: Instance, base: &Url) -> Resu
         fix_state: FixState::NoFix,
         committed: None,
         patches: Vec::new(),
+        delivery: None,
         labels: fields
             .get("labels")
             .and_then(Value::as_array)
@@ -592,6 +593,7 @@ mod tests {
             fix_state: FixState::NoFix,
             committed: None,
             patches: vec![],
+            delivery: None,
             labels: vec!["awaiting_validation".into(), "nvidia".into()],
             verification: None,
         };

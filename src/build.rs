@@ -5,14 +5,14 @@ use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::config::Config;
+use crate::config::{Config, TagFamily};
 use crate::confluence::PmPage;
 use crate::fetch::{self, InitiativeData, KeysByVersion, Patches, RawData, Watched};
 use crate::jira::Version;
 use crate::model::{
-    BuildHealth, Category, Committed, EpicRef, FixRef, FixState, InitiativeCard, IssueKey, Kpi,
-    SNAPSHOT_FORMAT, Severity, Snapshot, SourceCount, SourceStatus, Tab, Ticket, Tone, Track,
-    Verdict, View, ViewId, ViewKind,
+    BuildHealth, Category, Committed, Delivery, EpicRef, FixRef, FixState, InitiativeCard,
+    IssueKey, Kpi, SNAPSHOT_FORMAT, Severity, Snapshot, SourceCount, SourceStatus, Tab, Ticket,
+    Tone, Track, Verdict, View, ViewId, ViewKind,
 };
 use crate::rules::{self, BLOCKER, Bucket, CRITICAL, Classifier, TrackInput};
 
@@ -48,14 +48,24 @@ pub(crate) fn snapshot(
         GerritState::Read(p) => p,
         GerritState::NotRead | GerritState::Failed(_) => &empty,
     };
+    let gerrit_error = match gerrit {
+        GerritState::NotRead => Some("not read yet".to_string()),
+        GerritState::Read(p) => (!p.errors.is_empty()).then(|| p.errors.join("; ")),
+        GerritState::Failed(e) => Some(e.to_string()),
+    };
     let ctx = Context {
         cfg,
         raw,
         patches,
+        patch_gap: gerrit_error.clone(),
+        releases: ReleaseDates::new(),
         today: raw.today,
         versions: all_versions(cfg, raw),
     };
     let classifier = Classifier::new(cfg)?;
+    // Releases first: they date the customer tickets whose patches are in review.
+    let (release_views, releases) = ctx.release_views();
+    let ctx = Context { releases, ..ctx };
     let (mut others, mut gcp, mut nvidia) = (Vec::new(), Vec::new(), Vec::new());
     let rated = raw
         .customers
@@ -91,15 +101,10 @@ pub(crate) fn snapshot(
             ctx.customer_view(ViewId::Nvidia, nvidia, true),
         ],
     );
-    let development_tab = tab("development", "Development", ctx.release_views());
+    let development_tab = tab("development", "Development", release_views);
     let future_tab = tab("future", "Future work", vec![ctx.future_view()]);
 
     let mut sources = raw.sources.clone();
-    let gerrit_error = match gerrit {
-        GerritState::NotRead => Some("not read yet".to_string()),
-        GerritState::Read(p) => (!p.errors.is_empty()).then(|| p.errors.join("; ")),
-        GerritState::Failed(e) => Some(e.to_string()),
-    };
     sources.push(SourceStatus {
         name: "Gerrit".into(),
         error: gerrit_error,
@@ -114,50 +119,46 @@ pub(crate) fn snapshot(
     })
 }
 
-/// The refresh read everything its verdicts depend on.
-pub(crate) fn complete(raw: &RawData) -> bool {
+/// The refresh read everything its verdicts depend on: every source, and
+/// Gerrit where patches decide delivery.
+pub(crate) fn complete(cfg: &Config, raw: &RawData, gerrit: GerritState<'_>) -> bool {
+    let patches_read = matches!(gerrit, GerritState::Read(p) if p.errors.is_empty());
     !raw.notes.iter().any(|n| n.incomplete)
+        && (patches_read || cfg.tag_families.iter().all(|f| f.views.is_empty()))
 }
 
-/// The tickets whose Gerrit changes are shown: every NVIDIA and GCP ticket,
-/// S1/S2 tickets of other customers, and every release and initiative blocker.
+/// The tickets whose Gerrit changes are looked up: every row of every view.
+/// Commit messages never name a customer ticket, so it is searched for by
+/// the EX and LU tickets linked as its fixes too (any relation but
+/// `non_fix_relations`); any other ticket only by its own key, so that a
+/// linked ticket's change is not taken for its own.
 pub(crate) fn watch_list(cfg: &Config, snap: &Snapshot) -> Vec<Watched> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    for view in snap.tabs.iter().flat_map(|t| &t.views) {
-        let blockers: BTreeSet<&IssueKey> = view
-            .blockers
-            .iter()
-            .chain(view.initiatives.iter().flat_map(|c| &c.blockers))
-            .map(|b| &b.key)
-            .collect();
-        let watched_item = |t: &Ticket| match view.id {
-            // Each of its tickets is watched, or not, by its own group's view.
-            ViewId::All => false,
-            ViewId::Gcp | ViewId::Nvidia => true,
-            ViewId::Others => matches!(t.severity_level(), Some(1 | 2)),
-            _ => blockers.contains(&t.key),
-        };
-        for t in view.items.iter().filter(|t| watched_item(t)) {
-            if !seen.insert(t.key.clone()) {
-                continue;
-            }
-            let mut search = vec![t.key.clone()];
-            search.extend(t.also.iter().cloned());
-            search.extend(
-                t.links
-                    .iter()
-                    .map(|l| &l.key)
-                    .filter(|k| cfg.gerrit_key_projects.iter().any(|p| p == k.project()))
-                    .cloned(),
-            );
-            search.sort();
-            search.dedup();
-            out.push(Watched {
-                key: t.key.clone(),
-                search,
-            });
+    let rows = snap.tabs.iter().flat_map(|t| &t.views).flat_map(|v| {
+        let customers = v.kind == ViewKind::Customers;
+        v.items.iter().chain(&v.tests).map(move |t| (customers, t))
+    });
+    for (customers, t) in rows {
+        if !seen.insert(t.key.clone()) {
+            continue;
         }
+        let mut search = vec![t.key.clone()];
+        search.extend(t.also.iter().cloned());
+        search.extend(
+            t.links
+                .iter()
+                .filter(|l| customers && cfg.is_fix_relation(&l.relation))
+                .map(|l| &l.key)
+                .filter(|k| cfg.gerrit_key_projects.iter().any(|p| p == k.project()))
+                .cloned(),
+        );
+        search.sort();
+        search.dedup();
+        out.push(Watched {
+            key: t.key.clone(),
+            search,
+        });
     }
     out
 }
@@ -261,6 +262,19 @@ struct Judged<'s> {
     /// For its view's notes: why the PM page date could not be used, when
     /// there is a page, and what a scope filter counts.
     notes: Vec<String>,
+    /// The name its date is kept under (`TrackSpec::date_key`).
+    date_key: &'s str,
+}
+
+/// Release dates by the name `release_dates` keeps them under ("ES6.3.10",
+/// "EXA7 Beta"); a release without a date is missing.
+type ReleaseDates = BTreeMap<String, NaiveDate>;
+
+/// Keeps a judged release's date for the customer tickets it is expected to carry.
+fn keep_date(releases: &mut ReleaseDates, judged: &Judged<'_>) {
+    if let Some(d) = judged.track.ref_date {
+        releases.insert(judged.date_key.to_string(), d);
+    }
 }
 
 /// Closures and additions during the closing window.
@@ -276,16 +290,84 @@ struct Context<'a> {
     cfg: &'a Config,
     raw: &'a RawData,
     patches: &'a Patches,
+    /// Why the patches were not all read, when they were not.
+    patch_gap: Option<String>,
+    /// The judged releases' dates; empty until the release views are built.
+    releases: ReleaseDates,
     today: NaiveDate,
     versions: HashMap<(&'a str, &'a str), &'a Version>,
 }
 
 impl<'a> Context<'a> {
-    /// An item with its Gerrit changes, and what says its fix awaits verification.
-    fn item(&self, mut t: Ticket) -> Ticket {
+    /// An item with its Gerrit changes, what they say about its delivery in
+    /// `view`, and what says its fix awaits verification.
+    fn item(&self, mut t: Ticket, view: ViewId) -> Ticket {
         t.patches = self.patches.map.get(&t.key).cloned().unwrap_or_default();
+        t.delivery = rules::delivery(&t.patches, &self.deciding(view));
         t.verification = rules::verification(self.cfg, &t);
         t
+    }
+
+    /// `tickets` as `view` shows them.
+    fn items(&self, tickets: &[Ticket], view: ViewId) -> Vec<Ticket> {
+        tickets.iter().map(|t| self.item(t.clone(), view)).collect()
+    }
+
+    /// The branches whose patches decide delivery in `view`.
+    fn deciding(&self, view: ViewId) -> Vec<&'a TagFamily> {
+        self.cfg
+            .tag_families
+            .iter()
+            .filter(|f| match view {
+                // The All view's tickets follow their own group's branches.
+                ViewId::All => f.views.iter().any(|v| ViewId::CUSTOMERS.contains(v)),
+                _ => f.views.contains(&view),
+            })
+            .collect()
+    }
+
+    /// The release expected to carry a customer ticket's patches in review,
+    /// and its date: of their branches' releases, the one dated last, an
+    /// undated one counting as last. `None` once every patch is merged.
+    fn expected_release(&self, d: &Delivery) -> Option<(String, Option<NaiveDate>)> {
+        d.branches
+            .iter()
+            .filter(|b| !b.merged)
+            .filter_map(|b| self.cfg.tag_families.iter().find(|f| f.branch == b.branch))
+            .map(|f| (f.release.clone(), self.releases.get(&f.release).copied()))
+            .max_by_key(|(_, date)| date.unwrap_or(NaiveDate::MAX))
+    }
+
+    /// For `view`'s notes: how many of `items` patches decide, and which
+    /// releases cannot date those in review. Empty where no branch decides.
+    fn patch_notes(&self, view: ViewId, items: &[&Ticket], noun: &str) -> Vec<String> {
+        let families = self.deciding(view);
+        if families.is_empty() {
+            return Vec::new();
+        }
+        let branches: Vec<&str> = families.iter().map(|f| f.branch.as_str()).collect();
+        let decided: Vec<&Delivery> = items.iter().filter_map(|t| t.delivery.as_ref()).collect();
+        let merged = decided.iter().filter(|d| d.merged).count();
+        let mut notes = vec![format!(
+            "Patches on {} decide the delivery of {}: {merged} merged, {} in review.",
+            branches.join(" or "),
+            counted(decided.len(), noun),
+            decided.len() - merged
+        )];
+        if ViewId::CUSTOMERS.contains(&view) {
+            notes.extend(
+                families
+                    .iter()
+                    .filter(|f| !self.releases.contains_key(&f.release))
+                    .map(|f| {
+                        format!(
+                            "{} has no date, so patches in review on {} give none.",
+                            f.release, f.branch
+                        )
+                    }),
+            );
+        }
+        notes
     }
 
     /// The fixVersion `name` of `project`.
@@ -295,10 +377,14 @@ impl<'a> Context<'a> {
 
     /// A customer ticket with its bucket, fix, promise and patches. Link
     /// states come from the cloud copy of each fix, since links on Whamcloud
-    /// tickets point at stale copies.
+    /// tickets point at stale copies. Patches on its group's branches stand
+    /// in for its linked fixes.
     fn customer(&self, classifier: &Classifier, t: Ticket) -> (Bucket, Ticket) {
-        let mut t = self.item(t);
         let bucket = classifier.bucket(&t);
+        let Some(view) = bucket.view() else {
+            return (bucket, t);
+        };
+        let mut t = self.item(t, view);
         for l in &mut t.links {
             if let Some(f) = self.raw.fixes.get(&l.key) {
                 l.done = f.category == Category::Done;
@@ -331,6 +417,17 @@ impl<'a> Context<'a> {
                 status: f.status.clone(),
                 category: f.category,
             });
+        if let Some(d) = t.delivery.as_mut() {
+            t.fix = None;
+            t.fix_state = if d.merged {
+                FixState::Delivered
+            } else {
+                FixState::UnderWay
+            };
+            if let Some((release, date)) = self.expected_release(d) {
+                (d.release, d.date) = (Some(release), date);
+            }
+        }
         if matches!(bucket, Bucket::Nvidia | Bucket::Gcp) {
             t.committed = std::iter::once(&t.key).chain(&t.also).find_map(|k| {
                 self.raw.commitments.get(k).map(|c| Committed {
@@ -345,22 +442,36 @@ impl<'a> Context<'a> {
 
     /// The refresh notes about `view`'s data.
     fn notes(&self, view: ViewId) -> Vec<String> {
+        let gap = self.patch_gap(view).map(|gap| {
+            format!(
+                "Gerrit not fully read ({gap}): where patches are missing, Jira decides delivery."
+            )
+        });
         self.raw
             .notes
             .iter()
             .filter(|n| n.views.contains(&view))
             .map(|n| n.text.clone())
+            .chain(gap)
             .collect()
+    }
+
+    /// Why patches that decide delivery in `view` were not all read, when they were not.
+    fn patch_gap(&self, view: ViewId) -> Option<&str> {
+        self.patch_gap
+            .as_deref()
+            .filter(|_| !self.deciding(view).is_empty())
     }
 
     /// A view whose verdict rests on data that was not all read: it reads no
     /// better than "at risk" and its summary says so.
     fn with_gaps(&self, mut view: View) -> View {
-        if self
-            .raw
-            .notes
-            .iter()
-            .any(|n| n.incomplete && n.views.contains(&view.id))
+        if self.patch_gap(view.id).is_some()
+            || self
+                .raw
+                .notes
+                .iter()
+                .any(|n| n.incomplete && n.views.contains(&view.id))
         {
             view.verdict = view.verdict.max(Verdict::AtRisk);
             view.summary = format!("Incomplete data, see the notes. {}", view.summary);
@@ -492,6 +603,7 @@ impl<'a> Context<'a> {
                 counted(by_priority, "ticket")
             ));
         }
+        notes.extend(self.patch_notes(id, &refs, "ticket"));
         let blockers = rules::customer_blockers(cfg, self.today, &refs);
         let open = items.len();
         // Most severe first, then most idle; an unknown idle time sorts as
@@ -539,7 +651,7 @@ impl<'a> Context<'a> {
                 kpi(
                     "Fix delivered",
                     delivered.to_string(),
-                    "every linked fix done, ticket open".into(),
+                    "patches merged or every linked fix done, ticket open".into(),
                     None,
                 ),
                 kpi(
@@ -676,6 +788,7 @@ impl<'a> Context<'a> {
             track,
             items,
             notes: pm_note.into_iter().chain(scope_notes).collect(),
+            date_key: spec.date_key,
         }
     }
 
@@ -684,6 +797,7 @@ impl<'a> Context<'a> {
         &self,
         name: &'s str,
         versions: &'s [String],
+        open: &'s [Ticket],
         page: Option<u64>,
         label: Option<&'s str>,
     ) -> TrackSpec<'s>
@@ -694,7 +808,7 @@ impl<'a> Context<'a> {
             name,
             project: &self.cfg.ex_project,
             versions,
-            open: &self.raw.ex_open,
+            open,
             closed: &self.raw.ex_closed,
             page,
             label,
@@ -702,9 +816,11 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn release_views(&self) -> Vec<View> {
+    /// The Development views, and the dates of the releases judged there.
+    fn release_views(&self) -> (Vec<View>, ReleaseDates) {
         let (cfg, raw) = (self.cfg, self.raw);
         let pages = &cfg.pm_pages;
+        let mut releases = ReleaseDates::new();
 
         let tracked = fetch::tracked_versions(cfg, &raw.ex_versions);
         let exa6: Vec<String> = fetch::release_versions(cfg, &tracked)
@@ -712,13 +828,15 @@ impl<'a> Context<'a> {
             .find(|(view, _)| *view == ViewId::Exa6)
             .map(|(_, names)| names)
             .unwrap_or_default();
+        let exa6_open = self.items(&raw.ex_open, ViewId::Exa6);
         let mut exa6_tracks = Vec::new();
         let mut exa6_items = Vec::new();
         let mut exa6_notes = self.notes(ViewId::Exa6);
         for name in &exa6 {
             let page = (*name == pages.exa6_release).then_some(pages.exa6);
-            let judged =
-                self.release_track(&self.ex_spec(name, std::slice::from_ref(name), page, None));
+            let spec = self.ex_spec(name, std::slice::from_ref(name), &exa6_open, page, None);
+            let judged = self.release_track(&spec);
+            keep_date(&mut releases, &judged);
             exa6_tracks.push(judged.track);
             exa6_items.extend(judged.items);
             exa6_notes.extend(judged.notes);
@@ -739,25 +857,30 @@ impl<'a> Context<'a> {
                 cfg.exa6_unscheduled
             ),
         });
+        let exa6_items = unique(exa6_items);
+        exa6_notes.extend(self.patch_notes(ViewId::Exa6, &exa6_items, "item"));
         let mut exa6_view = self.release_view(
             ViewId::Exa6,
             exa6_tracks,
-            &unique(exa6_items),
+            &exa6_items,
             self.window(ViewId::Exa6, &raw.ex_closed, &exa6),
         );
         exa6_view.health = self.health(true);
         exa6_view.notes = exa6_notes;
 
         let beta = std::slice::from_ref(&cfg.exa7_beta_version);
+        let beta_open = self.items(&raw.ex_open, ViewId::Exa7Beta);
         let judged = self.release_track(&TrackSpec {
             date_key: ViewId::Exa7Beta.label(),
             ..self.ex_spec(
                 &cfg.exa7_beta_version,
                 beta,
+                &beta_open,
                 Some(pages.exa7),
                 Some(&pages.exa7_beta_label),
             )
         });
+        keep_date(&mut releases, &judged);
         let mut beta_view = self.release_view(
             ViewId::Exa7Beta,
             vec![judged.track],
@@ -767,13 +890,24 @@ impl<'a> Context<'a> {
         beta_view.health = self.health(false);
         beta_view.notes = self.notes(ViewId::Exa7Beta);
         beta_view.notes.extend(judged.notes);
+        beta_view
+            .notes
+            .extend(self.patch_notes(ViewId::Exa7Beta, &judged.items, "item"));
 
         let ga = &cfg.exa7_ga_versions;
         let ga_name = format!("EXA7 GA ({})", ga.join(" + "));
+        let ga_open = self.items(&raw.ex_open, ViewId::Exa7Ga);
         let judged = self.release_track(&TrackSpec {
             date_key: ViewId::Exa7Ga.label(),
-            ..self.ex_spec(&ga_name, ga, Some(pages.exa7), Some(&pages.exa7_ga_label))
+            ..self.ex_spec(
+                &ga_name,
+                ga,
+                &ga_open,
+                Some(pages.exa7),
+                Some(&pages.exa7_ga_label),
+            )
         });
+        keep_date(&mut releases, &judged);
         let mut ga_view = self.release_view(
             ViewId::Exa7Ga,
             vec![judged.track],
@@ -783,11 +917,15 @@ impl<'a> Context<'a> {
         ga_view.health = self.health(false);
         ga_view.notes = self.notes(ViewId::Exa7Ga);
         ga_view.notes.extend(judged.notes);
+        ga_view
+            .notes
+            .extend(self.patch_notes(ViewId::Exa7Ga, &judged.items, "item"));
 
         let phases: Vec<String> = fetch::phases(cfg, &raw.sd_versions)
             .iter()
             .map(|v| v.name.clone())
             .collect();
+        let sd_open = self.items(&raw.sd_open, ViewId::ExaSd);
         let mut sd_notes = self.notes(ViewId::ExaSd);
         let mut sd_tracks: Vec<Track> = Vec::new();
         for name in &phases {
@@ -796,13 +934,14 @@ impl<'a> Context<'a> {
                 name,
                 project: &cfg.exa_sd_project,
                 versions: std::slice::from_ref(name),
-                open: &raw.sd_open,
+                open: &sd_open,
                 closed: &raw.sd_closed,
                 page,
                 label: None,
                 date_key: name,
             };
             let judged = self.release_track(&spec);
+            keep_date(&mut releases, &judged);
             sd_tracks.push(judged.track);
             sd_notes.extend(judged.notes);
         }
@@ -818,22 +957,18 @@ impl<'a> Context<'a> {
                 .filter(|i| i.config.in_exa_sd)
                 .map(|i| self.initiative_card(i).0.track),
         );
-        let tests = raw
-            .sd_open
-            .iter()
-            .filter(|t| rules::is_test_case(t))
-            .count();
+        let tests = sd_open.iter().filter(|t| rules::is_test_case(t)).count();
         let mut sd_view = self.release_view(
             ViewId::ExaSd,
             sd_tracks,
-            &raw.sd_open.iter().collect::<Vec<_>>(),
+            &sd_open.iter().collect::<Vec<_>>(),
             self.window(ViewId::ExaSd, &raw.sd_closed, &phases),
         );
         // Open scope counts the open EXA SD items other than Test items and
         // says how many those are; closures and additions count only items
         // in the phases.
         if let Some(open) = sd_view.kpis.first_mut() {
-            open.value = (raw.sd_open.len() - tests).to_string();
+            open.value = (sd_open.len() - tests).to_string();
             open.note = if tests == 1 {
                 "1 is a Test item".into()
             } else {
@@ -844,10 +979,11 @@ impl<'a> Context<'a> {
             window.note = "closed / added in the phases (new or moved in)".into();
         }
         sd_view.notes = sd_notes;
-        [exa6_view, beta_view, ga_view, sd_view]
+        let views = [exa6_view, beta_view, ga_view, sd_view]
             .into_iter()
             .map(|v| self.with_gaps(v))
-            .collect()
+            .collect();
+        (views, releases)
     }
 
     /// The build-health tile for es6 (EXA6) or es7 (EXA7) views.
@@ -913,7 +1049,7 @@ impl<'a> Context<'a> {
         let added = window
             .added
             .map_or_else(|| "?".to_string(), |a| a.to_string());
-        let mut sorted: Vec<Ticket> = items.iter().map(|t| self.item((*t).clone())).collect();
+        let mut sorted: Vec<Ticket> = items.iter().map(|&t| t.clone()).collect();
         sorted.sort_by(|a, b| {
             rules::priority_rank(a)
                 .cmp(&rules::priority_rank(b))
@@ -1033,7 +1169,7 @@ impl<'a> Context<'a> {
         }
         let items: Vec<Ticket> = unique(self.raw.initiatives.iter().flat_map(|i| &i.open))
             .into_iter()
-            .map(|t| self.item(t.clone()))
+            .map(|t| self.item(t.clone(), ViewId::Future))
             .collect();
         let verdict = cards
             .iter()
@@ -1120,7 +1256,9 @@ mod tests {
     use crate::config::InitiativeConfig;
     use crate::confluence::LabelledDate;
     use crate::fetch::{Note, Scope};
-    use crate::model::{ChangeStatus, DateSource, HealthPart, Instance, LinkRef, PatchRef, PmRef};
+    use crate::model::{
+        ChangeStatus, DateSource, HealthPart, Instance, LinkRef, PatchRef, PmRef, TargetSource,
+    };
     use crate::rules::tests::{d, idle, ticket, today};
     use url::Url;
 
@@ -1376,7 +1514,13 @@ mod tests {
     }
 
     fn build(raw: &RawData) -> Snapshot {
-        snapshot(&Config::default(), raw, GerritState::NotRead, timing()).unwrap()
+        snapshot(
+            &Config::default(),
+            raw,
+            GerritState::Read(&Patches::default()),
+            timing(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1553,30 +1697,6 @@ mod tests {
     }
 
     #[test]
-    fn the_all_view_adds_nothing_to_the_watch_list() {
-        let cfg = Config::default();
-        let mut raw = raw();
-        // A blocker in All others that is not S1/S2, so that view does not watch it.
-        let mut blocker = idle(ticket("DDN-8000", "Mount hangs"), 1);
-        (blocker.priority, blocker.source) = (Some("Blocker".into()), Some("DDN".into()));
-        raw.customers.push(blocker);
-
-        let snap = build(&raw);
-
-        assert!(
-            view(&snap, ALL)
-                .blockers
-                .iter()
-                .any(|b| b.key.as_str() == "DDN-8000")
-        );
-        assert!(
-            watch_list(&cfg, &snap)
-                .iter()
-                .all(|w| w.key.as_str() != "DDN-8000")
-        );
-    }
-
-    #[test]
     fn only_ex_fixes_give_dates() {
         let snap = build(&raw());
         let fix = |id: ViewId, key: &str| {
@@ -1730,7 +1850,11 @@ mod tests {
                 .iter()
                 .any(|n| n == "Whamcloud: not read (HTTP 503)")
         );
-        assert!(!complete(&raw));
+        assert!(!complete(
+            &Config::default(),
+            &raw,
+            GerritState::Read(&Patches::default())
+        ));
     }
 
     /// The views that read "Incomplete data".
@@ -1825,7 +1949,13 @@ mod tests {
             ..Config::default()
         };
 
-        let snap = snapshot(&cfg, &raw(), GerritState::NotRead, timing()).unwrap();
+        let snap = snapshot(
+            &cfg,
+            &raw(),
+            GerritState::Read(&Patches::default()),
+            timing(),
+        )
+        .unwrap();
 
         assert!(
             view(&snap, EXA6).notes.iter().any(
@@ -1899,7 +2029,13 @@ mod tests {
     fn a_release_is_judged_against_its_agreed_date() {
         let mut cfg = Config::default();
         cfg.release_dates.insert("EXA7 Beta".into(), d(2026, 12, 1));
-        let snap = snapshot(&cfg, &raw(), GerritState::NotRead, timing()).unwrap();
+        let snap = snapshot(
+            &cfg,
+            &raw(),
+            GerritState::Read(&Patches::default()),
+            timing(),
+        )
+        .unwrap();
         let track = |id: ViewId, name: &str| {
             view(&snap, id)
                 .tracks
@@ -2153,46 +2289,265 @@ mod tests {
             gerrit_error(&failed),
             Some(("Gerrit".into(), Some("no credentials".into())))
         );
+        let unread = snapshot(&Config::default(), &raw, GerritState::NotRead, timing()).unwrap();
         assert_eq!(
-            gerrit_error(&build(&raw)),
+            gerrit_error(&unread),
             Some(("Gerrit".into(), Some("not read yet".into())))
         );
     }
 
     #[test]
-    fn the_watch_list_covers_nvidia_gcp_s1_s2_and_blockers() {
-        let cfg = Config::default();
-        let snap = build(&raw());
+    fn unread_patches_cap_the_views_they_decide() {
+        let raw = raw();
+        let partial = Patches {
+            map: HashMap::new(),
+            errors: vec!["change search: timed out".into()],
+        };
+        let deciding = vec![ALL, OTHERS, GCP, NVIDIA, EXA6, EXA7_BETA, EXA7_GA];
 
-        let watched: Vec<(String, Vec<String>)> = watch_list(&cfg, &snap)
-            .into_iter()
-            .map(|w| {
-                (
-                    w.key.to_string(),
-                    w.search.iter().map(ToString::to_string).collect(),
-                )
-            })
-            .collect();
+        for gerrit in [
+            GerritState::NotRead,
+            GerritState::Failed("no credentials"),
+            GerritState::Read(&partial),
+        ] {
+            let snap = snapshot(&Config::default(), &raw, gerrit, timing()).unwrap();
 
-        assert_eq!(
-            watched,
-            [
-                ("DDN-3571".to_string(), vec!["DDN-3571".to_string()]),
-                (
-                    "GCP-315".to_string(),
-                    vec!["EX-300".to_string(), "GCP-315".to_string()]
-                ),
-                (
-                    "DDN-7162".to_string(),
-                    vec!["DDN-7162".to_string(), "EX-100".to_string()]
-                ),
-                (
-                    "NCP-163".to_string(),
-                    vec!["NCP-163".to_string(), "NP-131".to_string()]
-                ),
-                ("EX-1".to_string(), vec!["EX-1".to_string()]),
-            ]
+            assert_eq!(capped(&snap), deciding, "{gerrit:?}");
+            assert!(!complete(&Config::default(), &raw, gerrit), "{gerrit:?}");
+        }
+        assert!(
+            view(&build(&raw), EXA6)
+                .notes
+                .iter()
+                .all(|n| !n.starts_with("Gerrit not fully read")),
+            "a full read leaves no note"
         );
+        let unread = snapshot(&Config::default(), &raw, GerritState::NotRead, timing()).unwrap();
+        assert!(view(&unread, GCP).notes.contains(
+            &"Gerrit not fully read (not read yet): where patches are missing, Jira decides delivery."
+                .to_string()
+        ));
+        // Without a branch that decides delivery, Gerrit decides no verdict.
+        let mut cfg = Config::default();
+        for f in &mut cfg.tag_families {
+            f.views.clear();
+        }
+        let snap = snapshot(&cfg, &raw, GerritState::NotRead, timing()).unwrap();
+        assert_eq!(capped(&snap), Vec::<ViewId>::new());
+        assert!(complete(&cfg, &raw, GerritState::NotRead));
+    }
+
+    #[test]
+    fn the_watch_list_covers_every_row_once() {
+        let cfg = Config::default();
+        let mut raw = raw();
+        if let Some(t) = raw.ex_open.iter_mut().find(|t| t.key.as_str() == "EX-1") {
+            t.links = vec![link("LU-18086", "relates to", false)];
+        }
+        let snap = build(&raw);
+
+        let watched = watch_list(&cfg, &snap);
+        let mut keys: Vec<String> = watched.iter().map(|w| w.key.to_string()).collect();
+        keys.sort();
+        let mut rows: Vec<String> = [
+            "DDN-3571", "DDN-6000", "DDN-6001", "DDN-6741", "DDN-6900", "DDN-7162", "GCP-315",
+            "NCP-163", "EX-1", "EX-50", "EX-60", "EX-70", "EXM-1", "EXM-9", "EXM-500",
+        ]
+        .map(String::from)
+        .into();
+        rows.extend((2..=cfg.small_release_max + 3).map(|i| format!("EX-{i}")));
+        rows.sort();
+        let search = |key: &str| {
+            watched
+                .iter()
+                .find(|w| w.key.as_str() == key)
+                .map(|w| w.search.iter().map(ToString::to_string).collect::<Vec<_>>())
+        };
+
+        assert_eq!(keys, rows, "every row of every view, test items too, once");
+        assert_eq!(
+            search("DDN-7162"),
+            Some(vec!["DDN-7162".into(), "EX-100".into()])
+        );
+        assert_eq!(
+            search("NCP-163"),
+            Some(vec!["NCP-163".into(), "NP-131".into()])
+        );
+        assert_eq!(
+            search("DDN-6900"),
+            Some(vec!["DDN-6900".into()]),
+            "an EXR key never names a Lustre change"
+        );
+        assert_eq!(
+            search("EX-1"),
+            Some(vec!["EX-1".into()]),
+            "a release item's patches name it, not its linked LU ticket"
+        );
+        assert_eq!(
+            search("DDN-6741"),
+            Some(vec!["DDN-6741".into()]),
+            "an escalation record is no fix"
+        );
+    }
+
+    fn patch(number: u64, branch: &str, status: ChangeStatus, tag: Option<&str>) -> PatchRef {
+        PatchRef {
+            number,
+            url: Url::parse(&format!(
+                "https://review.whamcloud.com/c/ex/lustre-release/+/{number}"
+            ))
+            .unwrap(),
+            branch: branch.into(),
+            status,
+            first_tag: tag.map(String::from),
+        }
+    }
+
+    #[test]
+    fn a_ticket_in_review_on_both_branches_waits_for_the_later_release() {
+        let mut raw = raw();
+        let mut both = idle(ticket("GCP-316", "Client evictions under load"), 1);
+        (both.instance, both.source) = (Instance::Whamcloud, Some("Whamcloud".into()));
+        raw.customers.push(both);
+        let patches = Patches {
+            map: HashMap::from([(
+                "GCP-316".parse().unwrap(),
+                vec![
+                    patch(1, "b_es6_0", ChangeStatus::New, None),
+                    patch(2, "b_es7_0", ChangeStatus::New, None),
+                ],
+            )]),
+            errors: vec![],
+        };
+        let release = |cfg: &Config| {
+            let snap = snapshot(cfg, &raw, GerritState::Read(&patches), timing()).unwrap();
+            let d = item(&snap, GCP, "GCP-316").delivery.clone().unwrap();
+            (d.release, d.date, view(&snap, GCP).notes.clone())
+        };
+
+        // ES6.3.10 (27 Jan 2027, agreed) comes after EXA7 Beta (30 Nov 2026).
+        let (name, date, notes) = release(&Config::default());
+        assert_eq!(
+            (name.as_deref(), date),
+            (Some("ES6.3.10"), Some(d(2027, 1, 27)))
+        );
+        assert!(notes.iter().all(|n| !n.contains("has no date")));
+
+        // A release without a date counts as the later one, and the view says so.
+        let mut cfg = Config::default();
+        if let Some(es7) = cfg.tag_families.iter_mut().find(|f| f.branch == "b_es7_0") {
+            es7.release = "EXA7 Delta".into();
+        }
+        let (name, date, notes) = release(&cfg);
+        assert_eq!((name.as_deref(), date), (Some("EXA7 Delta"), None));
+        assert!(notes.contains(
+            &"EXA7 Delta has no date, so patches in review on b_es7_0 give none.".to_string()
+        ));
+    }
+
+    #[test]
+    fn patches_stand_in_for_jira_where_their_branch_decides() {
+        let raw = raw();
+        let merged = patch(1, "b_es6_0", ChangeStatus::Merged, Some("2.14.0-ddn262"));
+        let es6_review = patch(2, "b_es6_0", ChangeStatus::New, None);
+        let es7_review = patch(3, "b_es7_0", ChangeStatus::New, None);
+        let patches = Patches {
+            map: HashMap::from([
+                ("DDN-7162".parse().unwrap(), vec![merged.clone()]),
+                ("DDN-6000".parse().unwrap(), vec![es6_review]),
+                ("NCP-163".parse().unwrap(), vec![es7_review.clone()]),
+                (
+                    "GCP-315".parse().unwrap(),
+                    vec![merged.clone(), es7_review.clone()],
+                ),
+                ("EX-2".parse().unwrap(), vec![merged]),
+                (
+                    "EX-60".parse().unwrap(),
+                    vec![patch(4, "b_es6_0", ChangeStatus::Merged, None)],
+                ),
+            ]),
+            errors: vec![],
+        };
+        let cfg = Config::default();
+        let with = snapshot(&cfg, &raw, GerritState::Read(&patches), timing()).unwrap();
+        let without = build(&raw);
+        let delivery = |id: ViewId, key: &str| item(&with, id, key).delivery.clone();
+        let target = |id: ViewId, key: &str| rules::target(item(&with, id, key));
+
+        // NVIDIA runs EXA6: the merged es6 patch delivers the ticket, whatever
+        // its linked fix (EX-100, In Review) says.
+        let nvidia = item(&with, NVIDIA, "DDN-7162");
+        assert_eq!(
+            (
+                nvidia.fix_state,
+                nvidia.fix.as_ref(),
+                target(NVIDIA, "DDN-7162")
+            ),
+            (FixState::Delivered, None, None)
+        );
+        assert_eq!(
+            nvidia
+                .delivery
+                .as_ref()
+                .map(|d| (d.merged, d.branches[0].tag.as_deref())),
+            Some((true, Some("2.14.0-ddn262")))
+        );
+        assert!(item(&without, NVIDIA, "DDN-7162").fix.is_some());
+        // Its linked fix done, the ticket read as delivered; the es6 patch in
+        // review says otherwise, and dates it by ES6.3.10's agreed date.
+        assert_eq!(
+            item(&without, OTHERS, "DDN-6000").fix_state,
+            FixState::Delivered
+        );
+        assert_eq!(
+            item(&with, OTHERS, "DDN-6000").fix_state,
+            FixState::UnderWay
+        );
+        assert_eq!(
+            target(OTHERS, "DDN-6000"),
+            Some((d(2027, 1, 27), TargetSource::Patch))
+        );
+        assert_eq!(
+            delivery(OTHERS, "DDN-6000").and_then(|d| d.release),
+            Some("ES6.3.10".to_string())
+        );
+        // An es7 patch says nothing about an NVIDIA ticket.
+        assert_eq!(delivery(NVIDIA, "NCP-163"), None);
+        // GCP runs both: the es7 patch in review holds the ticket, dated by EXA7 Beta.
+        let gcp = delivery(GCP, "GCP-315").unwrap();
+        assert_eq!(
+            (
+                gcp.branches.len(),
+                gcp.merged,
+                gcp.release.as_deref(),
+                gcp.date
+            ),
+            (2, false, Some("EXA7 Beta"), Some(d(2026, 11, 30)))
+        );
+        assert_eq!(delivery(ALL, "GCP-315"), Some(gcp));
+        // Release items: a merged es6 patch counts EX-2 (In Review) as done in
+        // EXA6; an es6 patch says nothing about an EXA7 Beta item.
+        let weighted = |snap: &Snapshot| {
+            view(snap, EXA6)
+                .tracks
+                .iter()
+                .find(|t| t.name == "ES6.3.10")
+                .map(|t| t.weighted)
+        };
+        assert_eq!(
+            weighted(&with)
+                .zip(weighted(&without))
+                .map(|(w, wo)| ((wo - w) * 10.0).round()),
+            Some(3.0)
+        );
+        assert_eq!(delivery(EXA7_BETA, "EX-60"), None);
+        assert!(view(&with, EXA6).notes.contains(
+            &"Patches on b_es6_0 decide the delivery of 1 item: 1 merged, 0 in review.".to_string()
+        ));
+        assert!(view(&with, ALL).notes.contains(
+            &"Patches on b_es6_0 or b_es7_0 decide the delivery of 3 tickets: 1 merged, 2 in review."
+                .to_string()
+        ));
     }
 
     #[test]
@@ -2294,8 +2649,9 @@ mod tests {
             status: ChangeStatus::Merged,
             first_tag: Some("2.14.0-ddn258".into()),
         };
+        // On a ticket without a dated fix, so the layout keeps both a fix and a delivery.
         let patches = Patches {
-            map: HashMap::from([("DDN-7162".parse().unwrap(), vec![patch])]),
+            map: HashMap::from([("GCP-315".parse().unwrap(), vec![patch])]),
             errors: vec![],
         };
         let snap = snapshot(&cfg, &raw, GerritState::Read(&patches), timing()).unwrap();

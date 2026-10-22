@@ -11,7 +11,7 @@ use url::Url;
 /// Version of the snapshot layout. The server serves a snapshot only when it
 /// matches, so a server built before a layout change never feeds its embedded
 /// page a snapshot written by a newer worker.
-pub(crate) const SNAPSHOT_FORMAT: u32 = 9;
+pub(crate) const SNAPSHOT_FORMAT: u32 = 10;
 
 /// A view (sub-tab). Notes name the views they concern, and the UI keeps the
 /// selected one across refreshes by its id.
@@ -355,6 +355,33 @@ pub(crate) struct PatchRef {
     pub(crate) first_tag: Option<String>,
 }
 
+/// A ticket's patches on one branch that decides its delivery.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BranchDelivery {
+    /// The branch, e.g. `b_es6_0`.
+    pub(crate) branch: String,
+    /// Every one of its patches is merged.
+    pub(crate) merged: bool,
+    /// Once every one is in a tag, the newest of their first tags: the first
+    /// build that has them all, e.g. `2.14.0-ddn262`.
+    pub(crate) tag: Option<String>,
+}
+
+/// What a ticket's patches say about its delivery, on the branches that
+/// decide it in its view (`TagFamily::views`). Abandoned patches do not count.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Delivery {
+    /// Each of those branches it has a patch on.
+    pub(crate) branches: Vec<BranchDelivery>,
+    /// Every one of those patches is merged.
+    pub(crate) merged: bool,
+    /// A customer ticket with patches in review: the release expected to
+    /// carry them (`TagFamily::release`; of two, the later).
+    pub(crate) release: Option<String>,
+    /// That release's date, when it has one.
+    pub(crate) date: Option<NaiveDate>,
+}
+
 /// A Jira ticket with what the dashboard derives about it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Ticket {
@@ -406,8 +433,11 @@ pub(crate) struct Ticket {
     pub(crate) fix_state: FixState,
     /// Date promised to the customer.
     pub(crate) committed: Option<Committed>,
-    /// Gerrit changes for watched tickets.
+    /// Its Gerrit changes on the branches in `tag_families`.
     pub(crate) patches: Vec<PatchRef>,
+    /// What they say about its delivery, where they decide it; Jira's fix
+    /// state, fix date and status weight give way to it.
+    pub(crate) delivery: Option<Delivery>,
     /// Jira labels.
     pub(crate) labels: Vec<String>,
     /// The status or label that says its fix awaits verification
@@ -555,6 +585,8 @@ pub(crate) struct StatusCount {
 pub(crate) enum TargetSource {
     /// The local commitments file.
     Committed,
+    /// The date of the release expected to carry its patches in review.
+    Patch,
     /// The release date of the linked EX fix.
     LinkedFix,
 }

@@ -247,9 +247,14 @@ pub(crate) fn keys_in(message: &str) -> BTreeSet<IssueKey> {
 /// The earliest tag of a family (`2.14.0-ddn258` for prefix `2.14.0-ddn`), by number.
 pub(crate) fn first_tag(tags: &[String], prefix: &str) -> Option<String> {
     tags.iter()
-        .filter_map(|t| Some((t.strip_prefix(prefix)?.parse::<u32>().ok()?, t)))
+        .filter_map(|t| Some((tag_number(t, prefix)?, t)))
         .min_by_key(|(n, _)| *n)
         .map(|(_, t)| t.clone())
+}
+
+/// A tag's number in its family: 258 for `2.14.0-ddn258` and prefix `2.14.0-ddn`.
+pub(crate) fn tag_number(tag: &str, prefix: &str) -> Option<u32> {
+    tag.strip_prefix(prefix)?.parse().ok()
 }
 
 fn strip_xssi(text: &str) -> &str {

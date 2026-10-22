@@ -1056,3 +1056,35 @@ test("a release card shows the agreed release date first, when the verdict uses 
   ]);
   assert.match(page.document.querySelector("#view .track .dates").textContent, /^Release date27 Jan 2027agreed; the verdict uses it/);
 });
+
+test("patches that decide a ticket's delivery stand in for its linked fix and its date", async () => {
+  const snap = sampleSnapshot();
+  const items = nvidiaOf(snap).items;
+  // In review on es6: dated by the release expected to carry it.
+  Object.assign(items.find((t) => t.key === "NVDCSE-250"), {
+    fix: null,
+    delivery: { branches: [{ branch: "b_es6_0", merged: false, tag: null }], merged: false, release: "ES6.3.9_C1", date: "2026-11-06" },
+  });
+  // Merged on both branches, one not in a tag yet: delivered, nothing left to date.
+  Object.assign(items.find((t) => t.key === "DDN-7162"), {
+    fix_state: "delivered",
+    delivery: {
+      branches: [{ branch: "b_es6_0", merged: true, tag: "2.14.0-ddn262" }, { branch: "b_es7_0", merged: true, tag: null }],
+      merged: true,
+      release: null,
+      date: null,
+    },
+  });
+  const page = await openPage(new FakeServer(snap));
+
+  assert.deepEqual(
+    ["NVDCSE-250", "DDN-7162"].map((key) => [cell(page, key, "Fix").textContent, cell(page, key, "Date").textContent]),
+    [
+      ["es6 review, for ES6.3.9_C1", "6 Nov 2026 patch Set"],
+      ["es6 ddn262, es7 merged", "Set"],
+    ],
+  );
+  assert.equal(cell(page, "NVDCSE-250", "Date").childNodes[0].getAttribute("title"), "The date of ES6.3.9_C1, expected to carry its patches in review");
+  heading(page, "Date").click();
+  assert.deepEqual(rows(page), ["NCP-9", "NCP-163", "NVDCSE-248", "NVDCSE-250", "NVDCSE-216", "DDN-7162"]);
+});

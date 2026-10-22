@@ -431,15 +431,28 @@ function exportTools(label, { header, rows, keys }) {
     el("button", { type: "button", "aria-label": `Export keys (md): ${label}`, onclick: toMd }, "Export keys (md)"));
 }
 
+/** "es6 ddn262", "es6 merged" before its first tag, or "es7 review". */
+const patchText = (branch, merged, tag) => `${branchName(branch)} ${merged ? (tag ? tag.replace(/^.*-/, "") : "merged") : "review"}`;
+
 function patchCell(t) {
   const shown = (t.patches || []).filter((p) => p.status !== "abandoned");
   if (!shown.length) return "";
   return el("span", { class: "patches" }, shown.map((p) => {
-    const where = branchName(p.branch);
-    const text = p.status === "merged" ? `${where} ${p.first_tag ? p.first_tag.replace(/^.*-/, "") : "merged"}` : `${where} review`;
+    const text = patchText(p.branch, p.status === "merged", p.first_tag);
     return el("a", { class: `chip ${p.status === "merged" ? "ok" : "neutral"}`, href: p.url, target: "_blank", rel: "noopener noreferrer", title: `Change ${p.number}` }, text);
   }));
 }
+
+/** Where the patches that decide a ticket's delivery are, branch by branch,
+ * and the release expected to carry those in review. */
+function deliveryText(d) {
+  const where = d.branches.map((b) => patchText(b.branch, b.merged, b.tag)).join(", ");
+  return d.release ? `${where}, for ${d.release}` : where;
+}
+
+/** The date a customer ticket is judged by, as the rules pick it: the
+ * committed date, else its patches', else its linked fix's. */
+const targetDate = (t) => (t.committed ? t.committed.date : t.delivery ? t.delivery.date : t.fix ? t.fix.date : null);
 
 /** Shows a saved or cleared date on its rows at once, so the editor never
  * reopens on the old one; the next snapshot brings the rest (groups, verdicts). */
@@ -495,6 +508,10 @@ function customerDateCell(t, editable) {
     const filed = t.committed.key === t.key ? "committed" : `committed on ${t.committed.key}`;
     return el("span", { title: t.committed.note || "" }, fmtDate(t.committed.date), " ", el("span", { class: "badge" }, filed), " ", edit);
   }
+  if (t.delivery && t.delivery.date) {
+    const why = `The date of ${t.delivery.release}, expected to carry its patches in review`;
+    return el("span", { title: why }, fmtDate(t.delivery.date), " ", el("span", { class: "badge" }, "patch"), " ", edit);
+  }
   if (t.fix) return el("span", {}, fmtDate(t.fix.date), " ", el("span", { class: "badge" }, "fix"), " ", edit);
   return edit || "";
 }
@@ -520,6 +537,10 @@ const idleCell = (customers) => (t) => {
 /** Unknown idle time sorts as the most idle in customer views, as the rules treat it. */
 const idleSort = (customers) => (t) => (unknownIdle(t) ? (customers ? Infinity : -1) : t.idle_days);
 const fixCell = (t) => {
+  if (t.delivery) {
+    const why = t.delivery.merged ? "Delivered: every patch is merged" : "A patch is still in review";
+    return el("span", { title: why }, deliveryText(t.delivery));
+  }
   if (t.fix) return el("span", { title: `${t.fix.status}` }, link(t.fix.url, `${t.fix.key} ${t.fix.version}`));
   return FIX_STATE[t.fix_state] || "";
 };
@@ -542,8 +563,8 @@ function columns(v) {
       { label: "Sev / Pri", sort: (t) => (t.severity ? t.severity.level : 9) * 10, cell: sevPri },
       { label: "Owner", sort: (t) => t.assignee || "", cell: (t) => t.assignee || "Unassigned" },
       { label: "Idle", sort: idleSort(true), cell: idleCell(true), cls: "num" },
-      { label: "Date", sort: (t) => (t.committed ? t.committed.date : t.fix ? t.fix.date : "9999"), cell: (t) => customerDateCell(t, v.editable_commitments) },
-      { label: "Fix", sort: (t) => (t.fix ? t.fix.key : FIX_STATE[t.fix_state] || ""), cell: fixCell },
+      { label: "Date", sort: (t) => targetDate(t) || "9999", cell: (t) => customerDateCell(t, v.editable_commitments) },
+      { label: "Fix", sort: (t) => (t.delivery ? deliveryText(t.delivery) : t.fix ? t.fix.key : FIX_STATE[t.fix_state] || ""), cell: fixCell },
       patches,
     ];
   }

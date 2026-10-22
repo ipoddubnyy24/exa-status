@@ -174,7 +174,8 @@ fn levels_over_defaults<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<Stri
     Ok(levels)
 }
 
-/// A Lustre tag family whose first tag containing a change is reported.
+/// A Lustre branch: the tag family whose first tag containing a change is
+/// reported, and where its patches decide delivery.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TagFamily {
@@ -182,6 +183,12 @@ pub(crate) struct TagFamily {
     pub(crate) branch: String,
     /// Tag prefix, e.g. `2.14.0-ddn`.
     pub(crate) prefix: String,
+    /// Customer group and release views whose tickets this branch's patches
+    /// deliver, in place of Jira. The All view's tickets follow their group.
+    pub(crate) views: Vec<ViewId>,
+    /// The release expected to carry a customer ticket's patch still in
+    /// review here, named as in `release_dates`.
+    pub(crate) release: String,
 }
 
 /// All settings.
@@ -514,9 +521,20 @@ impl Default for Config {
             ],
             gerrit_project: "ex/lustre-release".into(),
             gerrit_key_projects: strings(&["EX", "LU"]),
+            // GCP runs both lines, every other customer EXA6.
             tag_families: vec![
-                TagFamily { branch: "b_es6_0".into(), prefix: "2.14.0-ddn".into() },
-                TagFamily { branch: "b_es7_0".into(), prefix: "2.16.0-ddn".into() },
+                TagFamily {
+                    branch: "b_es6_0".into(),
+                    prefix: "2.14.0-ddn".into(),
+                    views: vec![ViewId::Others, ViewId::Gcp, ViewId::Nvidia, ViewId::Exa6],
+                    release: "ES6.3.10".into(),
+                },
+                TagFamily {
+                    branch: "b_es7_0".into(),
+                    prefix: "2.16.0-ddn".into(),
+                    views: vec![ViewId::Gcp, ViewId::Exa7Beta, ViewId::Exa7Ga],
+                    release: ViewId::Exa7Beta.label().into(),
+                },
             ],
         }
     }
@@ -645,6 +663,19 @@ impl Config {
                 i.name
             );
         }
+        // EXA SD and Future work tracks are judged from items without patches.
+        let deliverable = |v: &ViewId| {
+            *v != ViewId::All && (ViewId::CUSTOMERS.contains(v) || ViewId::RELEASES.contains(v))
+        };
+        for f in &self.tag_families {
+            if let Some(v) = f.views.iter().find(|v| !deliverable(v)) {
+                bail!(
+                    "tag_families: {} names {}; patches decide delivery only in the customer group and EX release views",
+                    f.branch,
+                    v.as_str()
+                );
+            }
+        }
         self.reporter_url()?;
         Ok(())
     }
@@ -656,6 +687,12 @@ impl Config {
             None if category == Category::Indeterminate => UNDER_WAY_WEIGHT,
             None => NOT_STARTED_WEIGHT,
         }
+    }
+
+    /// Remaining-work weight of an item whose patch is in review: that of the
+    /// "in review" status.
+    pub(crate) fn review_weight(&self) -> f64 {
+        self.weight(REVIEW_STATUSES[0], Category::Indeterminate)
     }
 
     /// The status counts as "in review or verification".
@@ -771,6 +808,16 @@ mod tests {
     #[test_case(r#"{"customer_sources": [{"name": "DDN", "instance": "cloud", "projects": []}]}"#, "customer source \"DDN\" needs projects named like DDN or NVDCSE" ; "source without projects")]
     #[test_case(r#"{"customer_sources": [{"name": "DDN", "instance": "cloud", "projects": ["DDN) OR (1=1"]}]}"#, "customer source \"DDN\" needs projects named like DDN or NVDCSE" ; "project that is not a key")]
     #[test_case(r#"{"fix_projects": ["EXR"]}"#, "fix_projects must include EX: only its fixes give dates" ; "fixes without EX")]
+    #[test_case(
+        r#"{"tag_families": [{"branch": "b_es6_0", "prefix": "2.14.0-ddn", "views": ["customers-all"], "release": "ES6.3.10"}]}"#,
+        "tag_families: b_es6_0 names customers-all; patches decide delivery only in the customer group and EX release views" ;
+        "the All view, whose tickets follow their group"
+    )]
+    #[test_case(
+        r#"{"tag_families": [{"branch": "b_es7_0", "prefix": "2.16.0-ddn", "views": ["dev-exa-sd"], "release": "EXA7 GA"}]}"#,
+        "tag_families: b_es7_0 names dev-exa-sd; patches decide delivery only in the customer group and EX release views" ;
+        "EXA SD, judged from items without patches"
+    )]
     fn bad_values_are_rejected_at_load(json: &str, message: &str) {
         let err = Config::parse(json).unwrap_err();
 
@@ -823,6 +870,12 @@ mod tests {
         let cfg = Config::parse(r#"{"status_weights": {"In Review": 0.5}}"#).unwrap();
 
         assert_eq!(cfg.weight("in review", Category::Indeterminate), 0.5);
+        assert_eq!(
+            cfg.review_weight(),
+            0.5,
+            "a patch in review weighs as In Review"
+        );
+        assert_eq!(Config::default().review_weight(), REVIEW_WEIGHT);
         assert_eq!(
             cfg.weight("Awaiting Verification", Category::Indeterminate),
             VERIFY_WEIGHT

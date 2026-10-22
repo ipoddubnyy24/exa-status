@@ -1,4 +1,4 @@
-format 9
+format 10
 .duration_secs
 .format
 .generated_at
@@ -93,6 +93,14 @@ format 9
 .tabs[].views[].items[].committed.key
 .tabs[].views[].items[].committed.note
 .tabs[].views[].items[].created
+.tabs[].views[].items[].delivery
+.tabs[].views[].items[].delivery.branches
+.tabs[].views[].items[].delivery.branches[].branch
+.tabs[].views[].items[].delivery.branches[].merged
+.tabs[].views[].items[].delivery.branches[].tag
+.tabs[].views[].items[].delivery.date
+.tabs[].views[].items[].delivery.merged
+.tabs[].views[].items[].delivery.release
 .tabs[].views[].items[].due
 .tabs[].views[].items[].fix
 .tabs[].views[].items[].fix.category
@@ -157,6 +165,7 @@ format 9
 .tabs[].views[].tests[].category
 .tabs[].views[].tests[].committed
 .tabs[].views[].tests[].created
+.tabs[].views[].tests[].delivery
 .tabs[].views[].tests[].due
 .tabs[].views[].tests[].fix
 .tabs[].views[].tests[].fix_state

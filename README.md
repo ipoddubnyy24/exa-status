@@ -151,8 +151,10 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   customer source (in the views its projects feed), issues of a list that
   could not be read, an initiative, a configured fixVersion Jira lacks (its
   release reads "no date"), a dated PM page (the Jira date stands in, and the
-  track says "PM page not read"), linked fixes, and the commitments file
-  (GCP and NVIDIA).
+  track says "PM page not read"), linked fixes, the commitments file
+  (GCP and NVIDIA), and Gerrit in the views whose delivery patches decide.
+  A refresh writes its snapshot before it reads Gerrit, so those views read
+  as incomplete until Gerrit is added a minute or two later.
 - "Added" in the last-days number: items created, or moved into one of the
   view's own fixVersions, in the window; a move into another view's version
   does not count here.
@@ -162,7 +164,30 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   fixVersions are planning quarters ("2025Q4"), so an EXR fix gives no date.
   "Fix delivered" means every linked fix, EX or EXR, was read and is done;
   once a fix is under way, an open customer ticket no longer counts as "not
-  started" in its date group.
+  started" in its date group. Where patches decide a ticket's delivery, they
+  stand in for its linked fixes.
+- Patches (`tag_families`): every ticket a view shows is looked up in
+  Gerrit, on b_es6_0 and b_es7_0 only (master is not searched): changes
+  whose commit message names the ticket or its mirror copy. Commit messages
+  never name a customer ticket, so for one the EX and LU tickets linked as
+  its fixes (see Fixes) count too; any other ticket counts only its own
+  changes, since a linked ticket's changes are often other work (EX-1917,
+  a To Do item, would otherwise read as delivered by EX-2010's merged scsi
+  changes). Abandoned changes do not count. Where a branch's `views` name
+  the view, its patches decide delivery in place of Jira: es6 in every
+  customer group and EXA6, es7 in GCP (which runs both) and EXA7 Beta and
+  GA. A ticket with patches on two such branches is delivered once both are
+  merged.
+  - Customer tickets: merged patches read as "fix delivered" and leave
+    nothing to date; one in review reads as under way and dates the ticket
+    by the release expected to carry it (`release`: ES6.3.10 for es6, EXA7
+    Beta for es7; of two, the later). A committed date still comes first.
+    The Fix column shows them as in the Patches column: "es6 ddn262",
+    "es6 merged" (not in a tag yet), "es7 review, for EXA7 Beta".
+  - Release items: a merged patch counts the item as done in the
+    projection and one in review weighs as In Review, whatever the Jira
+    status; judged per item, a merged item is never at risk and one in
+    review has started.
 - Test cases (issue type Test) are not counted as release blockers or in
   EXA SD's open scope. A release view lists them in a table of their own,
   below the other items.

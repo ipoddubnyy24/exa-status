@@ -31,17 +31,19 @@ pub(crate) fn refresh_once(cfg: &Config, out: Option<&Path>, print: bool) -> Res
     store::write_json(path, &first)?;
 
     let watched = build::watch_list(cfg, &first);
-    let snap = match fetch::patches(cfg, &watched) {
-        Ok(patches) => build::snapshot(cfg, &raw, GerritState::Read(&patches), timing())?,
-        Err(e) => {
-            warn!("Gerrit: {e:#}");
-            let message = format!("{e:#}");
-            build::snapshot(cfg, &raw, GerritState::Failed(&message), timing())?
-        }
+    let read = fetch::patches(cfg, &watched);
+    let message = read.as_ref().err().map(|e| format!("{e:#}"));
+    let gerrit = match &read {
+        Ok(patches) => GerritState::Read(patches),
+        Err(_) => GerritState::Failed(message.as_deref().unwrap_or_default()),
     };
+    if let Some(m) = &message {
+        warn!("Gerrit: {m}");
+    }
+    let snap = build::snapshot(cfg, &raw, gerrit, timing())?;
     store::write_json(path, &snap)?;
     if out.is_none() {
-        let line = store::history_line(&snap, !build::complete(&raw));
+        let line = store::history_line(&snap, !build::complete(cfg, &raw, gerrit));
         // The history is not needed for the page, so a failed append only warns.
         if let Err(e) = store::append_history(&cfg.data_file(store::HISTORY_FILE), &line) {
             warn!("{e:#}");

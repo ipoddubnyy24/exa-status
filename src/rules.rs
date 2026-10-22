@@ -8,10 +8,12 @@ use chrono::{Duration, NaiveDate};
 use regex::Regex;
 use std::collections::BTreeMap;
 
-use crate::config::Config;
+use crate::config::{Config, TagFamily};
+use crate::gerrit;
 use crate::model::{
-    Blocker, Category, DateGroup, DateSource, FixState, IssueKey, PmRef, Severity, StatusCount,
-    TargetSource, Ticket, Tone, Track, Verdict,
+    Blocker, BranchDelivery, Category, ChangeStatus, DateGroup, DateSource, Delivery, FixState,
+    IssueKey, PatchRef, PmRef, Severity, StatusCount, TargetSource, Ticket, Tone, Track, Verdict,
+    ViewId,
 };
 
 /// Priority that marks a blocker.
@@ -38,6 +40,18 @@ pub(crate) enum Bucket {
     Other,
     /// A test ticket; left out of every customer view.
     Test,
+}
+
+impl Bucket {
+    /// The customer view of the group; none shows test tickets.
+    pub(crate) fn view(self) -> Option<ViewId> {
+        match self {
+            Self::Nvidia => Some(ViewId::Nvidia),
+            Self::Gcp => Some(ViewId::Gcp),
+            Self::Other => Some(ViewId::Others),
+            Self::Test => None,
+        }
+    }
 }
 
 /// Sorts customer tickets into buckets.
@@ -233,6 +247,48 @@ pub(crate) fn verification(cfg: &Config, t: &Ticket) -> Option<String> {
         .cloned()
 }
 
+/// What `patches` on the branches of `families` say about a ticket's
+/// delivery; `None` when it has no patch there but abandoned ones. Each
+/// branch with one counts: the ticket is delivered once all of them are
+/// merged.
+pub(crate) fn delivery(patches: &[PatchRef], families: &[&TagFamily]) -> Option<Delivery> {
+    let branches: Vec<BranchDelivery> = families
+        .iter()
+        .filter_map(|f| {
+            let live: Vec<&PatchRef> = patches
+                .iter()
+                .filter(|p| p.branch == f.branch && p.status != ChangeStatus::Abandoned)
+                .collect();
+            if live.is_empty() {
+                return None;
+            }
+            let merged = live.iter().all(|p| p.status == ChangeStatus::Merged);
+            // A patch not in a tag yet, in review or just merged, leaves the
+            // branch without a build that has them all.
+            let tags: Option<Vec<(u32, &String)>> = live
+                .iter()
+                .map(|p| {
+                    let tag = p.first_tag.as_ref()?;
+                    Some((gerrit::tag_number(tag, &f.prefix)?, tag))
+                })
+                .collect();
+            Some(BranchDelivery {
+                branch: f.branch.clone(),
+                merged,
+                tag: tags
+                    .and_then(|t| t.into_iter().max())
+                    .map(|(_, tag)| tag.clone()),
+            })
+        })
+        .collect();
+    (!branches.is_empty()).then(|| Delivery {
+        merged: branches.iter().all(|b| b.merged),
+        branches,
+        release: None,
+        date: None,
+    })
+}
+
 /// The ticket's fixes: linked `fix_projects` tickets, except through a relation
 /// in `non_fix_relations`.
 pub(crate) fn fix_keys<'a>(
@@ -282,15 +338,32 @@ pub(crate) struct TrackInput<'a> {
     pub(crate) agreed_date: Option<NaiveDate>,
 }
 
+/// Remaining-work weight of an open item: its patches' where they decide its
+/// delivery (merged counts as done, in review as the "in review" status),
+/// else its status's.
+fn weight(cfg: &Config, t: &Ticket) -> f64 {
+    match &t.delivery {
+        Some(d) if d.merged => 0.0,
+        Some(_) => cfg.review_weight(),
+        None => cfg.weight(&t.status, t.category),
+    }
+}
+
+/// An open item judged on its own is at risk: not started, or idle over
+/// `idle_alert_days`. Merged patches deliver it; one in review has started it.
+fn stalled(cfg: &Config, t: &Ticket) -> bool {
+    match &t.delivery {
+        Some(d) if d.merged => false,
+        Some(_) => idle_over(t, cfg.idle_alert_days),
+        None => t.category == Category::New || idle_over(t, cfg.idle_alert_days),
+    }
+}
+
 /// Projects the work and judges it against the agreed release date, else
 /// the PM page date, else the Jira date.
 pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'_>) -> Track {
     let open = input.items.len();
-    let weighted: f64 = input
-        .items
-        .iter()
-        .map(|t| cfg.weight(&t.status, t.category))
-        .sum();
+    let weighted: f64 = input.items.iter().map(|t| weight(cfg, t)).sum();
     let per_week = input.closed_in_window as f64 * 7.0 / cfg.closed_window_days as f64;
     let projection = projected(today, weighted, per_week);
     let (ref_date, ref_source) = match (input.agreed_date, input.pm_date, input.jira_date) {
@@ -336,10 +409,7 @@ pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'
             let at_risk = input
                 .items
                 .iter()
-                .filter(|t| {
-                    days_left <= cfg.risk_window_days
-                        && (t.category == Category::New || idle_over(t, cfg.idle_alert_days))
-                })
+                .filter(|t| days_left <= cfg.risk_window_days && stalled(cfg, t))
                 .count();
             let v = if at_risk > 0 {
                 Verdict::AtRisk
@@ -429,13 +499,15 @@ pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'
     }
 }
 
-/// A customer ticket's target date: the committed date, else the release date
-/// of its linked fix.
+/// A customer ticket's target date: the committed date, else what its
+/// patches say (nothing once they are merged, else the date of the release
+/// expected to carry them), else the release date of its linked fix.
 pub(crate) fn target(t: &Ticket) -> Option<(NaiveDate, TargetSource)> {
-    match (&t.committed, &t.fix) {
-        (Some(c), _) => Some((c.date, TargetSource::Committed)),
-        (None, Some(f)) => Some((f.date, TargetSource::LinkedFix)),
-        (None, None) => None,
+    match (&t.committed, &t.delivery, &t.fix) {
+        (Some(c), _, _) => Some((c.date, TargetSource::Committed)),
+        (None, Some(d), _) => d.date.map(|date| (date, TargetSource::Patch)),
+        (None, None, Some(f)) => Some((f.date, TargetSource::LinkedFix)),
+        (None, None, None) => None,
     }
 }
 
@@ -643,7 +715,7 @@ pub(crate) fn customer_blockers(
                 (Rule::BlockedStatus, t.status.clone(), Tone::Warning)
             } else if let Some(k) = blocked_by(t) {
                 (Rule::BlockedBy, format!("Blocked by {k}"), Tone::Warning)
-            } else if passed == Some(TargetSource::LinkedFix) {
+            } else if matches!(passed, Some(TargetSource::Patch | TargetSource::LinkedFix)) {
                 (Rule::DatePassed, "Fix date passed".into(), Tone::Warning)
             } else {
                 return None;
@@ -746,6 +818,7 @@ pub(crate) mod tests {
             fix_state: FixState::NoFix,
             committed: None,
             patches: vec![],
+            delivery: None,
             labels: vec![],
             verification: None,
         }
@@ -1201,6 +1274,173 @@ pub(crate) mod tests {
 
         assert_eq!(target(&t), Some((d(2026, 11, 1), TargetSource::Committed)));
         assert_eq!(target(&ticket("NVDCSE-1", "x")), None);
+    }
+
+    fn patch(branch: &str, status: ChangeStatus, tag: Option<&str>) -> PatchRef {
+        PatchRef {
+            number: 1,
+            url: Url::parse("https://review.whamcloud.com/c/ex/lustre-release/+/1").unwrap(),
+            branch: branch.into(),
+            status,
+            first_tag: tag.map(String::from),
+        }
+    }
+
+    /// A delivery whose branches do not matter to the rule under test.
+    fn delivered(merged: bool, date: Option<NaiveDate>) -> Delivery {
+        Delivery {
+            branches: vec![],
+            merged,
+            release: date.map(|_| "ES6.3.10".into()),
+            date,
+        }
+    }
+
+    #[test]
+    fn delivery_counts_live_patches_on_the_deciding_branches() {
+        use ChangeStatus::{Abandoned, Merged, New};
+        let cfg = Config::default();
+        let both: Vec<&TagFamily> = cfg.tag_families.iter().collect();
+        let es6: Vec<&TagFamily> = both
+            .iter()
+            .copied()
+            .filter(|f| f.branch == "b_es6_0")
+            .collect();
+        let es7 = patch("b_es7_0", Merged, Some("2.16.0-ddn60"));
+        let tags = |patches: &[PatchRef], families: &[&TagFamily]| {
+            delivery(patches, families).map(|d| {
+                let tags: Vec<Option<String>> = d.branches.iter().map(|b| b.tag.clone()).collect();
+                (d.merged, tags)
+            })
+        };
+        let es6_tag = |n: u32| Some(format!("2.14.0-ddn{n}"));
+
+        assert_eq!(
+            delivery(&[patch("b_es6_0", Abandoned, None), es7.clone()], &es6),
+            None,
+            "abandoned, or on a branch that does not decide"
+        );
+        assert_eq!(
+            tags(
+                &[
+                    patch("b_es6_0", Merged, es6_tag(99).as_deref()),
+                    patch("b_es6_0", Merged, es6_tag(100).as_deref()),
+                    patch("b_es6_0", Abandoned, None),
+                ],
+                &es6
+            ),
+            Some((true, vec![es6_tag(100)])),
+            "the newest first tag by number has them all"
+        );
+        assert_eq!(
+            tags(
+                &[
+                    patch("b_es6_0", Merged, es6_tag(262).as_deref()),
+                    patch("b_es6_0", Merged, None)
+                ],
+                &es6
+            ),
+            Some((true, vec![None])),
+            "one not in a tag yet"
+        );
+        assert_eq!(
+            tags(
+                &[
+                    patch("b_es6_0", Merged, es6_tag(262).as_deref()),
+                    patch("b_es6_0", New, None)
+                ],
+                &es6
+            ),
+            Some((false, vec![None])),
+            "one still in review"
+        );
+        assert_eq!(
+            tags(&[patch("b_es6_0", New, None), es7.clone()], &both),
+            Some((false, vec![None, Some("2.16.0-ddn60".into())])),
+            "every branch with a patch has to deliver"
+        );
+        assert_eq!(
+            tags(&[es7], &both),
+            Some((true, vec![Some("2.16.0-ddn60".into())])),
+            "a branch without one does not count"
+        );
+    }
+
+    #[test]
+    fn patches_date_a_ticket_in_place_of_its_linked_fix() {
+        let mut t = ticket("DDN-1", "x");
+        t.fix = Some(fix(d(2026, 12, 15), Category::New));
+        t.delivery = Some(delivered(false, Some(d(2027, 1, 27))));
+
+        assert_eq!(target(&t), Some((d(2027, 1, 27), TargetSource::Patch)));
+
+        t.delivery = Some(delivered(false, None));
+        assert_eq!(target(&t), None, "its release has no date");
+        t.delivery = Some(delivered(true, None));
+        assert_eq!(target(&t), None, "merged: nothing left to date");
+
+        t.committed = Some(committed("DDN-1", d(2026, 11, 1)));
+        assert_eq!(target(&t), Some((d(2026, 11, 1), TargetSource::Committed)));
+    }
+
+    #[test]
+    fn a_passed_patch_date_is_a_passed_fix_date() {
+        let mut t = idle(ticket("DDN-2", "x"), 1);
+        t.delivery = Some(delivered(false, Some(d(2026, 10, 1))));
+
+        let blockers = customer_blockers(&Config::default(), today(), &[&t]);
+
+        assert_eq!(
+            blockers
+                .iter()
+                .map(|b| b.reason.as_str())
+                .collect::<Vec<_>>(),
+            ["Fix date passed"]
+        );
+    }
+
+    #[test]
+    fn patches_weigh_release_items_in_place_of_their_status() {
+        let mut items = large("To Do", Category::New);
+        if let Some(first) = items.first_mut() {
+            first.delivery = Some(delivered(true, None));
+        }
+        if let Some(second) = items.get_mut(1) {
+            second.delivery = Some(delivered(false, None));
+        }
+
+        let track = evaluate_track(
+            &Config::default(),
+            today(),
+            input(&items, 28, Some(d(2026, 12, 1)), None),
+        );
+
+        // 18 not started, one merged (done) and one in review (0.3).
+        assert_eq!(track.weighted, 18.3);
+    }
+
+    #[test_case(Some(true), None, Verdict::OnTrack ; "merged, idle time unknown")]
+    #[test_case(Some(false), Some(1), Verdict::OnTrack ; "in review and fresh")]
+    #[test_case(Some(false), Some(8), Verdict::AtRisk ; "in review but idle")]
+    #[test_case(None, Some(1), Verdict::AtRisk ; "not started, no patch")]
+    fn patches_decide_whether_an_item_judged_alone_has_started(
+        merged: Option<bool>,
+        idle_days: Option<i64>,
+        expected: Verdict,
+    ) {
+        let mut items = open_items(1, "To Do", Category::New);
+        if let Some(first) = items.first_mut() {
+            first.idle_days = idle_days;
+            first.delivery = merged.map(|m| delivered(m, None));
+        }
+
+        let track = evaluate_track(
+            &Config::default(),
+            today(),
+            input(&items, 0, None, Some(d(2026, 11, 2))),
+        );
+
+        assert_eq!(track.verdict, expected);
     }
 
     #[test]
