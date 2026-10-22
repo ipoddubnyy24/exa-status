@@ -132,6 +132,12 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   closed per week over `closed_window_days`. An epic in a release counts as
   one item: 12 of the 23 open EXA7 GA epics had no child in a GA version on
   21 Oct 2026, so the epic is the only record of that work.
+- Scope filters (`scope_filters`): a release whose work a saved Jira filter
+  defines counts the filter's open issues, and its closures in the window,
+  instead of every item in the fixVersion. ES6.3.10 uses filter 49208
+  ("EX 6.3.10 scope"). Its view lists only those items for that release and
+  says how many it leaves out; if the filter cannot be read, the release
+  counts every item and its view reads as incomplete data.
 - Verdict: measured against the PM status page date, else the Jira fixVersion
   date. Up to `late_tolerance_days` late is at risk, later is off track. PM
   and Jira dates more than `date_gap_days` apart are flagged and turn on track

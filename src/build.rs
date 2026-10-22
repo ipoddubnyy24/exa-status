@@ -256,8 +256,9 @@ struct TrackSpec<'s> {
 struct Judged<'s> {
     track: Track,
     items: Vec<&'s Ticket>,
-    /// Why the PM page date could not be used, when there is a page.
-    pm_note: Option<String>,
+    /// For its view's notes: why the PM page date could not be used, when
+    /// there is a page, and what a scope filter counts.
+    notes: Vec<String>,
 }
 
 /// Closures and additions during the closing window.
@@ -567,6 +568,48 @@ impl<'a> Context<'a> {
         (read, page.is_some() && read.is_none())
     }
 
+    /// `t` is part of `version`'s work: every open item is, unless a scope
+    /// filter lists the version's open work.
+    fn in_scope(&self, project: &str, version: &str, t: &Ticket) -> bool {
+        project != self.cfg.ex_project
+            || self
+                .raw
+                .scopes
+                .get(version)
+                .is_none_or(|s| s.open.contains(&t.key))
+    }
+
+    /// What `version`'s scope filter counts, for its view's notes; `None`
+    /// when it has none.
+    fn scope_note(&self, spec: &TrackSpec<'_>, version: &str) -> Option<String> {
+        let scope = self
+            .raw
+            .scopes
+            .get(version)
+            .filter(|_| spec.project == self.cfg.ex_project)?;
+        let in_version: BTreeSet<&IssueKey> = spec
+            .open
+            .iter()
+            .filter(|t| t.fix_versions.iter().any(|f| f == version))
+            .map(|t| &t.key)
+            .collect();
+        let kept = in_version.iter().filter(|k| scope.open.contains(k)).count();
+        let mut note = format!(
+            "{version} is the work filter {} lists: {}, and its closures for the closing rate. {} in {version} not counted.",
+            scope.filter,
+            counted(kept, "open item"),
+            counted(in_version.len() - kept, "other open item"),
+        );
+        let outside = scope.open.len() - kept;
+        if outside > 0 {
+            note.push_str(&format!(
+                " The filter also lists {} without {version}, not counted either.",
+                counted(outside, "open item")
+            ));
+        }
+        Some(note)
+    }
+
     /// One release or phase, judged from its open items. A release none of
     /// whose fixVersions Jira has cannot be judged.
     fn release_track<'s>(&self, spec: &TrackSpec<'s>) -> Judged<'s>
@@ -576,7 +619,11 @@ impl<'a> Context<'a> {
         let items: Vec<&Ticket> = spec
             .open
             .iter()
-            .filter(|t| t.fix_versions.iter().any(|f| spec.versions.contains(f)))
+            .filter(|t| {
+                t.fix_versions
+                    .iter()
+                    .any(|f| spec.versions.contains(f) && self.in_scope(spec.project, f, t))
+            })
             .collect();
         let dated = spec
             .versions
@@ -618,10 +665,14 @@ impl<'a> Context<'a> {
                 track.reason = format!("{}. {text}", track.reason);
             }
         }
+        let scope_notes = spec
+            .versions
+            .iter()
+            .filter_map(|v| self.scope_note(spec, v));
         Judged {
             track,
             items,
-            pm_note,
+            notes: pm_note.into_iter().chain(scope_notes).collect(),
         }
     }
 
@@ -666,7 +717,7 @@ impl<'a> Context<'a> {
                 self.release_track(&self.ex_spec(name, std::slice::from_ref(name), page, None));
             exa6_tracks.push(judged.track);
             exa6_items.extend(judged.items);
-            exa6_notes.extend(judged.pm_note);
+            exa6_notes.extend(judged.notes);
         }
         if !exa6.contains(&pages.exa6_release) {
             exa6_notes.push(format!(
@@ -708,7 +759,7 @@ impl<'a> Context<'a> {
         );
         beta_view.health = self.health(false);
         beta_view.notes = self.notes(ViewId::Exa7Beta);
-        beta_view.notes.extend(judged.pm_note);
+        beta_view.notes.extend(judged.notes);
 
         let ga = &cfg.exa7_ga_versions;
         let ga_name = format!("EXA7 GA ({})", ga.join(" + "));
@@ -726,7 +777,7 @@ impl<'a> Context<'a> {
         );
         ga_view.health = self.health(false);
         ga_view.notes = self.notes(ViewId::Exa7Ga);
-        ga_view.notes.extend(judged.pm_note);
+        ga_view.notes.extend(judged.notes);
 
         let phases: Vec<String> = fetch::phases(cfg, &raw.sd_versions)
             .iter()
@@ -747,7 +798,7 @@ impl<'a> Context<'a> {
             };
             let judged = self.release_track(&spec);
             sd_tracks.push(judged.track);
-            sd_notes.extend(judged.pm_note);
+            sd_notes.extend(judged.notes);
         }
         if !phases.contains(&cfg.exa_sd_pm_phase) {
             sd_notes.push(format!(
@@ -1061,7 +1112,7 @@ mod tests {
     use crate::commitments::Commitment;
     use crate::config::InitiativeConfig;
     use crate::confluence::LabelledDate;
-    use crate::fetch::Note;
+    use crate::fetch::{Note, Scope};
     use crate::model::{ChangeStatus, HealthPart, Instance, LinkRef, PatchRef, PmRef};
     use crate::rules::tests::{d, idle, ticket, today};
     use url::Url;
@@ -1260,6 +1311,7 @@ mod tests {
                 ("ES7.0.0_Beta", &["EX-94"]),
                 ("ES7.0.0", &["EX-95"]),
             ]),
+            scopes: BTreeMap::new(),
             sd_closed: keys(&[("NVMesh-P2", &["EXM-90", "EXM-91"])]),
             added: BTreeMap::from([
                 (EXA6, Some(2)),
@@ -1833,6 +1885,60 @@ mod tests {
         assert!(
             view(&snap, EXA_SD).blockers.is_empty(),
             "the Blocker test case is not a blocker"
+        );
+    }
+
+    #[test]
+    fn a_scope_filter_decides_a_releases_open_work() {
+        let open = |snap: &Snapshot, name: &str| {
+            view(snap, EXA6)
+                .tracks
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| t.open)
+        };
+        assert_eq!(
+            open(&build(&raw()), "ES6.3.10"),
+            Some(8),
+            "without a filter, every open item"
+        );
+        let mut raw = raw();
+        // Also in ES6.3.9_C1, so it stays in EXA6 through that release.
+        if let Some(t) = raw.ex_open.iter_mut().find(|t| t.key.as_str() == "EX-3") {
+            t.fix_versions.push("ES6.3.9_C1".into());
+        }
+        raw.scopes.insert(
+            "ES6.3.10".into(),
+            Scope {
+                filter: 49208,
+                open: ["EX-1", "EX-2", "EX-999"]
+                    .iter()
+                    .map(|k| k.parse().unwrap())
+                    .collect(),
+            },
+        );
+
+        let snap = build(&raw);
+        let exa6 = view(&snap, EXA6);
+        let keys: Vec<&str> = exa6.items.iter().map(|t| t.key.as_str()).collect();
+
+        assert_eq!(
+            (open(&snap, "ES6.3.10"), open(&snap, "ES6.3.9_C1")),
+            (Some(2), Some(2))
+        );
+        assert_eq!(keys, ["EX-1", "EX-2", "EX-3", "EX-50"]);
+        assert!(
+            exa6.notes.iter().any(|n| n
+                == "ES6.3.10 is the work filter 49208 lists: 2 open items, and its closures for the closing rate. \
+                    6 other open items in ES6.3.10 not counted. \
+                    The filter also lists 1 open item without ES6.3.10, not counted either."),
+            "{:?}",
+            exa6.notes
+        );
+        assert_eq!(
+            view(&snap, EXA7_BETA).items.len(),
+            1,
+            "other releases keep every item"
         );
     }
 

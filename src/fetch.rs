@@ -67,6 +67,15 @@ impl Note {
     }
 }
 
+/// A release's open work as a saved Jira filter lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Scope {
+    /// The filter.
+    pub(crate) filter: u64,
+    /// Its open issues.
+    pub(crate) open: BTreeSet<IssueKey>,
+}
+
 /// The open work, epics and closures of one Future work initiative.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InitiativeData {
@@ -95,8 +104,13 @@ pub(crate) struct RawData {
     pub(crate) ex_open: Vec<Ticket>,
     /// Open EXA SD items.
     pub(crate) sd_open: Vec<Ticket>,
-    /// EX items closed in the window, by fixVersion.
+    /// EX items closed in the window, by fixVersion; for a version in
+    /// `scopes`, its filter's.
     pub(crate) ex_closed: KeysByVersion,
+    /// The open work of each tracked EX fixVersion a scope filter defines
+    /// (`scope_filters`), by name. A version missing here, because it has no
+    /// filter or its filter could not be read, counts every open item.
+    pub(crate) scopes: BTreeMap<String, Scope>,
     /// EXA SD items closed in the window, by fixVersion.
     pub(crate) sd_closed: KeysByVersion,
     /// Items added to each release view in the window (created, or moved
@@ -179,6 +193,35 @@ pub(crate) fn keys_by_version(issues: &[Value]) -> KeysByVersion {
     out
 }
 
+/// `version`'s work from its scope filter's issues, read with their `status`:
+/// the open ones, and the done ones, which replace the version's closures in
+/// `closed`.
+fn scope_from(filter: u64, version: &str, issues: &[Value], closed: &mut KeysByVersion) -> Scope {
+    let (mut open, mut done) = (BTreeSet::new(), BTreeSet::new());
+    for issue in issues {
+        let Some(key) = str_at(issue, "/key").and_then(|k| k.parse::<IssueKey>().ok()) else {
+            warn!("skipping an issue without a valid key in filter {filter}");
+            continue;
+        };
+        if str_at(issue, "/fields/status/statusCategory/key") == Some("done") {
+            done.insert(key);
+        } else {
+            open.insert(key);
+        }
+    }
+    closed.insert(version.to_string(), done);
+    Scope { filter, open }
+}
+
+/// The tracked fixVersions that a scope filter defines, with their filters.
+fn scoped<'a>(cfg: &'a Config, tracked: &[String]) -> Vec<(&'a String, u64)> {
+    cfg.scope_filters
+        .iter()
+        .filter(|(version, _)| tracked.contains(version))
+        .map(|(version, filter)| (version, *filter))
+        .collect()
+}
+
 /// The tracked EX fixVersions: dated, unreleased EXA6 ones, then the
 /// configured Beta and GA ones that Jira has. A JQL that names a version Jira
 /// does not have fails, so missing ones are left out (see `missing_versions`).
@@ -257,6 +300,9 @@ enum QueryId {
     Customers(usize),
     ExOpen,
     ExClosed,
+    /// The issues of the `i`th scoped fixVersion's filter (see `scoped`):
+    /// open, or closed in the window.
+    Scope(usize),
     /// Items added to one release view's fixVersions.
     Added(ViewId),
     ExUnscheduled,
@@ -274,9 +320,10 @@ impl QueryId {
         )
     }
 
-    /// Its failure leaves its views' verdicts on partial data.
+    /// Its failure leaves its views' verdicts on partial data. An unread
+    /// scope filter leaves its release counting every item in the version.
     fn feeds_verdicts(self) -> bool {
-        matches!(self, Self::Customers(_))
+        matches!(self, Self::Customers(_) | Self::Scope(_))
     }
 }
 
@@ -475,7 +522,7 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
             }));
         }
     }
-    let (mut ex_open, ex_closed) = if tracked.is_empty() {
+    let (mut ex_open, mut ex_closed) = if tracked.is_empty() {
         notes.push(Note::gap(
             ViewId::RELEASES,
             "No EX release is tracked: Jira has none of the configured versions.".into(),
@@ -487,6 +534,15 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
             keys_by_version(&take_raw(&mut rows, QueryId::ExClosed)?),
         )
     };
+    let mut scopes = BTreeMap::new();
+    for (i, (version, filter)) in scoped(cfg, &tracked).into_iter().enumerate() {
+        // An unread filter is already a gap note; its version counts every item.
+        let Ok(issues) = take_raw(&mut rows, QueryId::Scope(i)) else {
+            continue;
+        };
+        let scope = scope_from(filter, version, &issues, &mut ex_closed);
+        scopes.insert(version.clone(), scope);
+    }
     let unscheduled = take_raw(&mut rows, QueryId::ExUnscheduled)
         .ok()
         .map(|r| r.len());
@@ -575,6 +631,7 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
         ex_open,
         sd_open,
         ex_closed,
+        scopes,
         sd_closed,
         added,
         unscheduled,
@@ -821,7 +878,22 @@ fn queries(cfg: &Config, tracked: &[String], phase_names: &[String]) -> Vec<Quer
             ),
         ]);
     }
-    for (view, versions) in release_versions(cfg, tracked) {
+    let release_views = release_versions(cfg, tracked);
+    for (i, (version, filter)) in scoped(cfg, tracked).into_iter().enumerate() {
+        let view = release_views
+            .iter()
+            .find(|(_, names)| names.contains(version))
+            .map(|(view, _)| *view);
+        list.push(query(
+            QueryId::Scope(i),
+            &format!("{version} scope (filter {filter})"),
+            Instance::Cloud,
+            format!("filter = {filter} AND (statusCategory != Done OR resolved >= -{w}d)"),
+            Some("status"),
+            view.into_iter().collect(),
+        ));
+    }
+    for (view, versions) in release_views {
         if !versions.is_empty() {
             list.push(query(
                 QueryId::Added(view),
@@ -1284,6 +1356,72 @@ mod tests {
     }
 
     #[test]
+    fn a_scope_filter_gives_the_open_work_and_the_closures() {
+        let status = |key: &str, category: &str| json!({"key": key, "fields": {"status": {"name": "x", "statusCategory": {"key": category}}}});
+        let issues = vec![
+            status("EX-1", "indeterminate"),
+            status("EX-2", "done"),
+            status("EX-3", "new"),
+            status("bad", "new"),
+        ];
+        let keys =
+            |set: &BTreeSet<IssueKey>| set.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let mut closed = keys_by_version(&[
+            json!({"key": "EX-9", "fields": {"fixVersions": [{"name": "ES6.3.10"}]}}),
+            json!({"key": "EX-8", "fields": {"fixVersions": [{"name": "ES6.3.9_C1"}]}}),
+        ]);
+
+        let scope = scope_from(49208, "ES6.3.10", &issues, &mut closed);
+
+        assert_eq!(
+            (scope.filter, keys(&scope.open)),
+            (49208, vec!["EX-1".to_string(), "EX-3".to_string()])
+        );
+        assert_eq!(
+            closed.get("ES6.3.10").map(keys),
+            Some(vec!["EX-2".to_string()]),
+            "the filter's closures replace the version's"
+        );
+        assert_eq!(
+            closed.get("ES6.3.9_C1").map(keys),
+            Some(vec!["EX-8".to_string()]),
+            "other versions keep theirs"
+        );
+    }
+
+    #[test]
+    fn only_a_tracked_version_has_its_scope_filter_read() {
+        let cfg = Config::default();
+        let scope = |tracked: &[&str]| {
+            let tracked: Vec<String> = tracked.iter().map(ToString::to_string).collect();
+            queries(&cfg, &tracked, &[])
+                .into_iter()
+                .filter(|q| matches!(q.id, QueryId::Scope(_)))
+                .map(|q| {
+                    (
+                        q.jql,
+                        q.views.into_iter().collect::<Vec<_>>(),
+                        q.id.required(),
+                        q.id.feeds_verdicts(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            scope(&["ES6.3.9_C1", "ES6.3.10"]),
+            [(
+                "filter = 49208 AND (statusCategory != Done OR resolved >= -28d)".to_string(),
+                vec![ViewId::Exa6],
+                false,
+                true
+            )],
+            "an unread filter is a gap in its view, not a failed refresh"
+        );
+        assert_eq!(scope(&["ES6.3.9_C1"]), []);
+    }
+
+    #[test]
     fn keys_by_version_groups_closures() {
         let issues = vec![
             json!({"key": "EX-1", "fields": {"fixVersions": [{"name": "ES6.3.10"}, {"name": "ES7.0.0"}]}}),
@@ -1437,6 +1575,7 @@ mod tests {
                 "NP",
                 "EX open",
                 "EX closed",
+                "ES6.3.10 scope (filter 49208)",
                 "EXA6 added",
                 "EX unscheduled",
                 "EXA SD open",

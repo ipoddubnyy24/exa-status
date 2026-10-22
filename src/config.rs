@@ -272,6 +272,10 @@ pub(crate) struct Config {
     pub(crate) exa7_beta_version: String,
     /// The EXA7 GA fixVersions.
     pub(crate) exa7_ga_versions: Vec<String>,
+    /// Tracked EX fixVersions whose work is a saved Jira filter, by name: the
+    /// release counts the filter's open issues and its closures in the window
+    /// instead of every item in the version.
+    pub(crate) scope_filters: BTreeMap<String, u64>,
     /// EXA SD's Jira project.
     pub(crate) exa_sd_project: String,
     /// EXA SD phase fixVersions start with this.
@@ -434,6 +438,8 @@ impl Default for Config {
             exa6_unscheduled: "ES6.3.x (TBD)".into(),
             exa7_beta_version: "ES7.0.0_Beta".into(),
             exa7_ga_versions: strings(&["ES7.0.0", "ES7.1.0"]),
+            // "EX 6.3.10 scope", Manish Agrawal's filter, chosen on 22 Oct 2026.
+            scope_filters: BTreeMap::from([("ES6.3.10".into(), 49208)]),
             exa_sd_project: "EXM".into(),
             exa_sd_phase_prefix: "NVMesh-P".into(),
             exa_sd_pm_phase: "NVMesh-P2".into(),
