@@ -11,7 +11,7 @@ use url::Url;
 /// Version of the snapshot layout. The server serves a snapshot only when it
 /// matches, so a server built before a layout change never feeds its embedded
 /// page a snapshot written by a newer worker.
-pub(crate) const SNAPSHOT_FORMAT: u32 = 11;
+pub(crate) const SNAPSHOT_FORMAT: u32 = 12;
 
 /// A view (sub-tab). Notes name the views they concern, and the UI keeps the
 /// selected one across refreshes by its id.
@@ -493,6 +493,23 @@ pub(crate) struct Kpi {
     /// The counted tickets by customer source, which the page offers as
     /// filters of the table; empty on every other tile.
     pub(crate) by_source: Vec<SourceCount>,
+    /// `value` in pieces, where some are counts the page offers as filters
+    /// of the table; empty when it has none.
+    pub(crate) value_parts: Vec<TilePart>,
+    /// `note` in pieces, the same way.
+    pub(crate) note_parts: Vec<TilePart>,
+}
+
+/// A piece of a tile's value or note: words, or a count of tickets.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct TilePart {
+    /// What the tile shows, e.g. "152 past the idle limit".
+    pub(crate) text: String,
+    /// For a count: what the table's filter calls it, e.g. "S1/S2 past the
+    /// idle limit"; the same from one snapshot to the next.
+    pub(crate) filter: Option<String>,
+    /// For a count: the tickets it counts.
+    pub(crate) keys: Vec<IssueKey>,
 }
 
 /// How many of a view's tickets came from one customer source.

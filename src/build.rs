@@ -12,7 +12,7 @@ use crate::jira::Version;
 use crate::model::{
     BuildHealth, Category, Committed, Delivery, EpicRef, FixRef, FixState, InitiativeCard,
     IssueKey, Kpi, SNAPSHOT_FORMAT, Severity, Snapshot, SourceCount, SourceStatus, Tab, Ticket,
-    Tone, Track, Verdict, View, ViewId, ViewKind,
+    TilePart, Tone, Track, Verdict, View, ViewId, ViewKind,
 };
 use crate::rules::{self, BLOCKER, Bucket, CRITICAL, Classifier, TrackInput};
 
@@ -200,7 +200,43 @@ fn kpi(label: &str, value: String, note: String, tone: Option<Tone>) -> Kpi {
         note,
         tone,
         by_source: Vec::new(),
+        value_parts: Vec::new(),
+        note_parts: Vec::new(),
     }
+}
+
+/// A tile whose value and note are made of pieces, some of them counts.
+fn tile(label: &str, value: Vec<TilePart>, note: Vec<TilePart>, tone: Option<Tone>) -> Kpi {
+    let text = |parts: &[TilePart]| parts.iter().map(|p| p.text.as_str()).collect();
+    Kpi {
+        value_parts: value.clone(),
+        note_parts: note.clone(),
+        ..kpi(label, text(&value), text(&note), tone)
+    }
+}
+
+/// Words on a tile.
+fn words(text: impl Into<String>) -> TilePart {
+    TilePart {
+        text: text.into(),
+        filter: None,
+        keys: Vec::new(),
+    }
+}
+
+/// A count of the tickets `keys` on a tile, shown as `text`; the table's
+/// filter calls it `filter`.
+fn count_of(text: String, filter: &str, keys: Vec<IssueKey>) -> TilePart {
+    TilePart {
+        text,
+        filter: Some(filter.into()),
+        keys,
+    }
+}
+
+/// The keys of `tickets`.
+fn keys_of(tickets: &[&Ticket]) -> Vec<IssueKey> {
+    tickets.iter().map(|t| t.key.clone()).collect()
 }
 
 /// "1 ticket", "3 tickets".
@@ -508,14 +544,13 @@ impl<'a> Context<'a> {
             .map(|SourceCount { source, count }| format!("{source} {count}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let s1 = refs
-            .iter()
-            .filter(|t| t.severity_level() == Some(1))
-            .count();
-        let s2 = refs
-            .iter()
-            .filter(|t| t.severity_level() == Some(2))
-            .count();
+        let rated = |level: u8| -> Vec<&Ticket> {
+            refs.iter()
+                .copied()
+                .filter(|t| t.severity_level() == Some(level))
+                .collect()
+        };
+        let (s1, s2) = (rated(1), rated(2));
         let unrated = refs.iter().filter(|t| t.severity.is_none()).count();
         let by_priority = refs
             .iter()
@@ -525,27 +560,36 @@ impl<'a> Context<'a> {
         // A complete ticket waits for its tag, so its idle time is no stall.
         let (complete, waiting): (Vec<&Ticket>, Vec<&Ticket>) =
             refs.iter().partition(|t| rules::is_complete(t));
-        let idle_count = waiting
+        let idle_over = |days: i64| -> Vec<&Ticket> {
+            waiting
+                .iter()
+                .copied()
+                .filter(|t| t.idle_days.is_some_and(|i| i > days))
+                .collect()
+        };
+        let (idle_long, idle_month) = (
+            idle_over(cfg.idle_alert_days),
+            idle_over(cfg.idle_offtrack_days),
+        );
+        let idle_unknown: Vec<&Ticket> = waiting
             .iter()
-            .filter(|t| t.idle_days.is_some_and(|i| i > cfg.idle_alert_days))
-            .count();
-        let idle_month = waiting
+            .copied()
+            .filter(|t| t.idle_days.is_none())
+            .collect();
+        let delivered: Vec<&Ticket> = refs
             .iter()
-            .filter(|t| t.idle_days.is_some_and(|i| i > cfg.idle_offtrack_days))
-            .count();
-        let idle_unknown = waiting.iter().filter(|t| t.idle_days.is_none()).count();
-        let delivered = refs
-            .iter()
+            .copied()
             .filter(|t| t.fix_state == FixState::Delivered)
-            .count();
-        let next_tag = complete
+            .collect();
+        let next_tag: Vec<&Ticket> = complete
             .iter()
+            .copied()
             .filter(|t| {
                 t.delivery
                     .as_ref()
                     .is_some_and(|d| d.branches.iter().any(|b| b.tag.is_none()))
             })
-            .count();
+            .collect();
         let committed = refs.iter().filter(|t| t.committed.is_some()).count();
         let dated = refs.iter().filter(|t| rules::target(t).is_some()).count();
         // Nor does it need a date: it is in a tag, or due in the next one.
@@ -553,7 +597,11 @@ impl<'a> Context<'a> {
             .iter()
             .filter(|t| rules::target(t).is_none())
             .count();
-        let undated = refs.len() - dated - complete_undated;
+        let undated: Vec<&Ticket> = waiting
+            .iter()
+            .copied()
+            .filter(|t| rules::target(t).is_none())
+            .collect();
         let groups = rules::date_groups(cfg, self.today, &refs);
         let date_verdict = groups
             .iter()
@@ -577,10 +625,10 @@ impl<'a> Context<'a> {
         };
         let summary = if idle.verdict >= Verdict::AtRisk {
             let mut parts = Vec::new();
-            if idle.past_limit > 0 {
+            if !idle.past_limit.is_empty() {
                 parts.push(format!(
                     "{} past the idle limit, {} of them idle over {} days",
-                    counted(idle.past_limit, "S1/S2 ticket"),
+                    counted(idle.past_limit.len(), "S1/S2 ticket"),
                     idle.off_track,
                     cfg.idle_offtrack_days
                 ));
@@ -623,6 +671,85 @@ impl<'a> Context<'a> {
         notes.extend(self.patch_notes(id, &refs, "ticket"));
         let blockers = rules::customer_blockers(cfg, self.today, &refs);
         let open = items.len();
+        let idle_label = format!("Idle over {} days", cfg.idle_alert_days);
+        let mut idle_note = vec![count_of(
+            format!("{} over {} days", idle_month.len(), cfg.idle_offtrack_days),
+            &format!("Idle over {} days", cfg.idle_offtrack_days),
+            keys_of(&idle_month),
+        )];
+        if !idle_unknown.is_empty() {
+            idle_note.push(words(", "));
+            idle_note.push(count_of(
+                format!("{} unknown", idle_unknown.len()),
+                "Idle time unknown",
+                keys_of(&idle_unknown),
+            ));
+        }
+        let fix_note = if next_tag.is_empty() {
+            vec![words("patches merged or every linked fix done")]
+        } else {
+            vec![
+                words("patches merged or every linked fix done; "),
+                count_of(
+                    format!("{} due in the next tag", next_tag.len()),
+                    "Due in the next tag",
+                    keys_of(&next_tag),
+                ),
+            ]
+        };
+        let mut dated_note = vec![
+            words(format!("{committed} committed, ")),
+            count_of(
+                format!("{} have no date", undated.len()),
+                "No date",
+                keys_of(&undated),
+            ),
+        ];
+        if complete_undated > 0 {
+            dated_note.push(words(format!(", {complete_undated} complete")));
+        }
+        let undated = undated.len();
+        let kpis = vec![
+            Kpi {
+                by_source,
+                ..kpi("Open", open.to_string(), source_note, None)
+            },
+            tile(
+                "S1 / S2",
+                vec![
+                    count_of(s1.len().to_string(), "S1", keys_of(&s1)),
+                    words(" / "),
+                    count_of(s2.len().to_string(), "S2", keys_of(&s2)),
+                ],
+                vec![count_of(
+                    format!("{} past the idle limit", idle.past_limit.len()),
+                    "S1/S2 past the idle limit",
+                    idle.past_limit.clone(),
+                )],
+                (!idle.past_limit.is_empty()).then_some(Tone::Danger),
+            ),
+            tile(
+                &idle_label,
+                vec![count_of(
+                    idle_long.len().to_string(),
+                    &idle_label,
+                    keys_of(&idle_long),
+                )],
+                idle_note,
+                None,
+            ),
+            tile(
+                "Fix complete",
+                vec![count_of(
+                    delivered.len().to_string(),
+                    "Fix complete",
+                    keys_of(&delivered),
+                )],
+                fix_note,
+                None,
+            ),
+            tile("Dated", vec![words(dated.to_string())], dated_note, None),
+        ];
         // Most severe first, then most idle; an unknown idle time sorts as
         // the most idle, as the rules treat it.
         items.sort_by(|a, b| {
@@ -635,61 +762,13 @@ impl<'a> Context<'a> {
                         .cmp(&a.idle_days.unwrap_or(i64::MAX)),
                 )
         });
-        let idle_note = match idle_unknown {
-            0 => format!("{idle_month} over {} days", cfg.idle_offtrack_days),
-            n => format!(
-                "{idle_month} over {} days, {n} unknown",
-                cfg.idle_offtrack_days
-            ),
-        };
         let view = View {
             id,
             label: id.label().into(),
             kind: ViewKind::Customers,
             verdict: date_verdict.max(idle.verdict),
             summary,
-            kpis: vec![
-                Kpi {
-                    by_source,
-                    ..kpi("Open", open.to_string(), source_note, None)
-                },
-                kpi(
-                    "S1 / S2",
-                    format!("{s1} / {s2}"),
-                    format!("{} past the idle limit", idle.past_limit),
-                    (idle.past_limit > 0).then_some(Tone::Danger),
-                ),
-                kpi(
-                    &format!("Idle over {} days", cfg.idle_alert_days),
-                    idle_count.to_string(),
-                    idle_note,
-                    None,
-                ),
-                kpi(
-                    "Fix complete",
-                    delivered.to_string(),
-                    if next_tag > 0 {
-                        format!(
-                            "patches merged ({next_tag} due in the next tag) or every linked fix done"
-                        )
-                    } else {
-                        "patches merged or every linked fix done".into()
-                    },
-                    None,
-                ),
-                kpi(
-                    "Dated",
-                    dated.to_string(),
-                    if complete_undated > 0 {
-                        format!(
-                            "{committed} committed, {undated} have no date, {complete_undated} complete"
-                        )
-                    } else {
-                        format!("{committed} committed, {undated} have no date")
-                    },
-                    None,
-                ),
-            ],
+            kpis,
             tracks: Vec::new(),
             undated,
             date_groups: groups,
@@ -2496,6 +2575,91 @@ mod tests {
     }
 
     #[test]
+    fn tile_counts_name_the_tickets_they_count() {
+        let mut raw = raw();
+        for t in &mut raw.customers {
+            match t.key.as_str() {
+                "DDN-6741" => t.idle_days = Some(10),
+                "DDN-6900" => t.idle_days = None,
+                _ => {}
+            }
+        }
+        let snap = build(&raw);
+        let parts = |label: &str| {
+            let k = view(&snap, OTHERS)
+                .kpis
+                .iter()
+                .find(|k| k.label == label)
+                .unwrap();
+            k.value_parts
+                .iter()
+                .chain(&k.note_parts)
+                .map(|p| {
+                    let keys: Vec<&str> = p.keys.iter().map(IssueKey::as_str).collect();
+                    (p.text.clone(), p.filter.clone(), keys.join(" "))
+                })
+                .collect::<Vec<_>>()
+        };
+        let count = |text: &str, filter: &str, keys: &str| {
+            (text.to_string(), Some(filter.to_string()), keys.to_string())
+        };
+        let words = |text: &str| (text.to_string(), None, String::new());
+
+        // DDN-3571 is the one S1 ticket, idle 1041 days.
+        assert_eq!(
+            parts("S1 / S2"),
+            [
+                count("1", "S1", "DDN-3571"),
+                words(" / "),
+                count("0", "S2", ""),
+                count(
+                    "1 past the idle limit",
+                    "S1/S2 past the idle limit",
+                    "DDN-3571"
+                ),
+            ]
+        );
+        assert_eq!(
+            parts("Idle over 7 days"),
+            [
+                count("2", "Idle over 7 days", "DDN-3571 DDN-6741"),
+                count("1 over 30 days", "Idle over 30 days", "DDN-3571"),
+                words(", "),
+                count("1 unknown", "Idle time unknown", "DDN-6900"),
+            ]
+        );
+        assert_eq!(
+            parts("Fix complete"),
+            [
+                count("1", "Fix complete", "DDN-6000"),
+                words("patches merged or every linked fix done"),
+            ]
+        );
+        assert_eq!(
+            parts("Dated"),
+            [
+                words("0"),
+                words("0 committed, "),
+                count(
+                    "5 have no date",
+                    "No date",
+                    "DDN-3571 DDN-6000 DDN-6001 DDN-6741 DDN-6900"
+                ),
+            ]
+        );
+        let dated = view(&snap, OTHERS)
+            .kpis
+            .iter()
+            .find(|k| k.label == "Dated")
+            .unwrap();
+        assert_eq!(
+            (dated.value.as_str(), dated.note.as_str()),
+            ("0", "0 committed, 5 have no date"),
+            "the tile reads as the pieces do"
+        );
+    }
+
+    #[test]
     fn complete_tickets_count_as_complete_not_as_stalled() {
         let cfg = Config::default();
         let raw = raw();
@@ -2549,7 +2713,7 @@ mod tests {
             tile(&with, OTHERS, "Fix complete"),
             Some((
                 "2".into(),
-                "patches merged (1 due in the next tag) or every linked fix done".into()
+                "patches merged or every linked fix done; 1 due in the next tag".into()
             ))
         );
         assert_eq!(

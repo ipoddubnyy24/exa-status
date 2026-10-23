@@ -69,9 +69,10 @@ class FakeNode {
     return `${this.constructor.name} ${JSON.stringify(this.textContent.slice(0, 80))}`;
   }
 
-  /** Descendant elements matching `selector`: compound selectors joined by spaces. */
+  /** Descendant elements matching `selector`: compound selectors joined by
+   * spaces (a quoted attribute value may hold spaces of its own). */
   querySelectorAll(selector) {
-    const chain = selector.split(" ").map(compound);
+    const chain = selector.match(/(?:[^\s"]+|"[^"]*")+/g).map(compound);
     const found = [];
     const walk = (node) => {
       for (const child of node.childNodes) {
@@ -1110,4 +1111,109 @@ test("a complete ticket reads as complete: in the table, in its date group and a
   );
   assert.match(group.textContent, /, 1 complete\. 2 not started or idle/);
   assert.deepEqual(blockerChips(page), { "NCP-9": ["Committed date passed", "Complete"] });
+});
+
+/** Words on a tile, and a count on it of the tickets `keys`, which the table's filter calls `filter`. */
+const words = (text) => ({ text, filter: null, keys: [] });
+const countOf = (text, filter, keys) => ({ text, filter, keys });
+
+/** The sample snapshot with the idle and dated tiles, whose counts filter the table. */
+function withTileCounts(snapshot, noDate = ["DDN-7162"]) {
+  nvidiaOf(snapshot).kpis.push(
+    {
+      label: "Idle over 7 days",
+      value: "2",
+      note: "1 over 30 days",
+      tone: null,
+      by_source: [],
+      value_parts: [countOf("2", "Idle over 7 days", ["NVDCSE-250", "NVDCSE-216"])],
+      note_parts: [countOf("1 over 30 days", "Idle over 30 days", ["NVDCSE-250"])],
+    },
+    {
+      label: "Dated",
+      value: "5",
+      note: `5 committed, ${noDate.length} have no date`,
+      tone: null,
+      by_source: [],
+      value_parts: [words("5")],
+      note_parts: [words("5 committed, "), countOf(`${noDate.length} have no date`, "No date", noDate)],
+    },
+  );
+  return snapshot;
+}
+const IDLE = "Idle over 7 days: 2 tickets";
+const NO_DATE = "No date: 1 ticket";
+
+test("a count on a tile limits the table to its tickets, and pressing it again lifts the limit", async () => {
+  const page = await openPage(new FakeServer(withTileCounts(sampleSnapshot())));
+
+  assert.equal(tile(page, "Idle over 7 days").querySelector(".kpi-value").textContent, "2", "the tile reads as before");
+  assert.equal(tile(page, "Dated").querySelector(".kpi-note").textContent, "5 committed, 1 have no date");
+  assert.deepEqual(tile(page, "Dated").querySelectorAll("button").map((b) => b.textContent), ["1 have no date"], "only counts are buttons");
+
+  await press(page, IDLE);
+
+  assert.deepEqual(rows(page), ["NVDCSE-250", "NVDCSE-216"]);
+  assert.equal(button(page, IDLE).getAttribute("aria-pressed"), "true");
+  assert.equal(filterChip(page), "Idle over 7 days");
+  assert.equal(flash(page), "Idle over 7 days: 2 of 6 tickets shown.");
+  assert.equal(focused(page), "Clear tile filter");
+
+  await press(page, IDLE);
+
+  assert.deepEqual(rows(page), ALL_ROWS);
+  assert.equal(filterChip(page), null);
+  assert.equal(flash(page), "Showing every ticket.");
+  assert.equal(focused(page), IDLE);
+});
+
+test("tile, source and date filters replace each other", async () => {
+  const page = await openPage(new FakeServer(withTileCounts(sampleSnapshot())));
+  await press(page, IDLE);
+
+  await press(page, "Idle over 30 days: 1 ticket");
+
+  assert.deepEqual(rows(page), ["NVDCSE-250"], "another count on the same tile");
+  assert.equal(filterChip(page), "Idle over 30 days");
+
+  await press(page, NO_DATE);
+
+  assert.deepEqual(rows(page), ["DDN-7162"]);
+  assert.equal(filterChip(page), "No date");
+
+  await press(page, WHAMCLOUD);
+
+  assert.deepEqual(rows(page), ["NCP-163", "NVDCSE-250", "NVDCSE-248", "NVDCSE-216", "NCP-9"]);
+  assert.equal(button(page, NO_DATE).getAttribute("aria-pressed"), "false");
+
+  await press(page, NOV_1);
+
+  assert.deepEqual(rows(page), ["NCP-163", "NVDCSE-250", "NVDCSE-248"]);
+  assert.equal(button(page, WHAMCLOUD).getAttribute("aria-pressed"), "false");
+
+  await press(page, IDLE);
+
+  assert.deepEqual(rows(page), ["NVDCSE-250", "NVDCSE-216"], "a tile count replaces a date group too");
+
+  await press(page, "Clear tile filter");
+
+  assert.deepEqual(rows(page), ALL_ROWS);
+  assert.equal(flash(page), "Showing every ticket.");
+});
+
+test("a tile filter follows newer snapshots, and is dropped when its count falls to none", async () => {
+  const page = await openPage(new FakeServer(withTileCounts(sampleSnapshot())));
+  await press(page, NO_DATE);
+
+  await publish(page, withTileCounts(sampleSnapshot(), ["NCP-9", "DDN-7162"]));
+
+  assert.deepEqual(rows(page), ["NCP-9", "DDN-7162"]);
+  assert.equal(filterChip(page), "No date");
+
+  await publish(page, withTileCounts(sampleSnapshot(), []));
+
+  assert.deepEqual(rows(page), ALL_ROWS);
+  assert.equal(filterChip(page), null);
+  assert.equal(flash(page), '"No date" counts no ticket any more; showing every ticket.');
+  assert.equal(tile(page, "Dated").querySelectorAll("button").length, 0, "a count of none is no button");
 });

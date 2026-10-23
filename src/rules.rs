@@ -581,14 +581,14 @@ pub(crate) fn date_groups(cfg: &Config, today: NaiveDate, tickets: &[&Ticket]) -
 }
 
 /// Customer health from severity and idle time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SeverityIdle {
     /// Off track when an S1/S2 ticket is idle longer than `idle_offtrack_days`;
     /// at risk when one is past its idle limit or its idle time is unknown;
     /// "no date" without S1/S2 tickets.
     pub(crate) verdict: Verdict,
     /// S1/S2 tickets past their idle limit.
-    pub(crate) past_limit: usize,
+    pub(crate) past_limit: Vec<IssueKey>,
     /// Of those, the ones idle longer than `idle_offtrack_days`.
     pub(crate) off_track: usize,
     /// S1/S2 tickets whose idle time could not be read.
@@ -598,7 +598,7 @@ pub(crate) struct SeverityIdle {
 /// Judges the S1/S2 tickets by idle time; a complete one waits for its tag,
 /// not for anyone's attention.
 pub(crate) fn severity_idle(cfg: &Config, tickets: &[&Ticket]) -> SeverityIdle {
-    let (mut rated, mut past_limit, mut off_track, mut unknown) = (0, 0, 0, 0);
+    let (mut rated, mut past_limit, mut off_track, mut unknown) = (0, Vec::new(), 0, 0);
     for t in tickets.iter().filter(|t| !is_complete(t)) {
         let Some((_, limit)) = idle_limit(cfg, t) else {
             continue;
@@ -607,7 +607,7 @@ pub(crate) fn severity_idle(cfg: &Config, tickets: &[&Ticket]) -> SeverityIdle {
         match t.idle_days {
             None => unknown += 1,
             Some(idle) if idle > limit => {
-                past_limit += 1;
+                past_limit.push(t.key.clone());
                 if idle > cfg.idle_offtrack_days {
                     off_track += 1;
                 }
@@ -617,7 +617,7 @@ pub(crate) fn severity_idle(cfg: &Config, tickets: &[&Ticket]) -> SeverityIdle {
     }
     let verdict = if off_track > 0 {
         Verdict::OffTrack
-    } else if past_limit > 0 || unknown > 0 {
+    } else if !past_limit.is_empty() || unknown > 0 {
         Verdict::AtRisk
     } else if rated > 0 {
         Verdict::OnTrack
@@ -1430,7 +1430,10 @@ pub(crate) mod tests {
             Verdict::NoDate,
             "no S1/S2 ticket left to judge by idle time"
         );
-        assert_eq!(severity_idle(&cfg, &[&complete, &in_review]).past_limit, 1);
+        assert_eq!(
+            severity_idle(&cfg, &[&complete, &in_review]).past_limit,
+            vec![in_review.key.clone()]
+        );
         assert!(customer_blockers(&cfg, today(), &[&complete]).is_empty());
     }
 
@@ -1630,18 +1633,21 @@ pub(crate) mod tests {
         let unrated = [ticket("NVDCSE-1", "x"), rated("DDN-9", 3, Some(400))];
 
         let judged = |tickets: &[Ticket]| severity_idle(&cfg, &tickets.iter().collect::<Vec<_>>());
-        let expect = |verdict, past_limit, off_track, unknown| SeverityIdle {
+        let expect = |verdict, past_limit: &[&str], off_track, unknown| SeverityIdle {
             verdict,
-            past_limit,
+            past_limit: past_limit.iter().map(|k| k.parse().unwrap()).collect(),
             off_track,
             unknown,
         };
 
-        assert_eq!(judged(&fresh), expect(Verdict::OnTrack, 0, 0, 0));
-        assert_eq!(judged(&s1_late), expect(Verdict::AtRisk, 1, 0, 0));
-        assert_eq!(judged(&s2_month), expect(Verdict::OffTrack, 2, 1, 0));
-        assert_eq!(judged(&unknown), expect(Verdict::AtRisk, 0, 0, 1));
-        assert_eq!(judged(&unrated), expect(Verdict::NoDate, 0, 0, 0));
+        assert_eq!(judged(&fresh), expect(Verdict::OnTrack, &[], 0, 0));
+        assert_eq!(judged(&s1_late), expect(Verdict::AtRisk, &["DDN-1"], 0, 0));
+        assert_eq!(
+            judged(&s2_month),
+            expect(Verdict::OffTrack, &["DDN-1", "DDN-2"], 1, 0)
+        );
+        assert_eq!(judged(&unknown), expect(Verdict::AtRisk, &[], 0, 1));
+        assert_eq!(judged(&unrated), expect(Verdict::NoDate, &[], 0, 0));
     }
 
     #[test]

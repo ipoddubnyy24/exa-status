@@ -255,16 +255,23 @@ function renderView(v) {
   return root;
 }
 
-/** The tiles; a tile counting tickets by source offers each count as a table filter. */
+/** The tiles. Each count of tickets on them, such as a source's or the S1
+ * tickets, is a filter of the table. */
 function kpis(v) {
   const sourceToggle = (s) => {
     const text = `${s.source} ${s.count}`;
     return filterToggle(v, { source: s.source }, text, `${text} ticket${s.count > 1 ? "s" : ""}`);
   };
+  /** A tile's value or note from its pieces; one counting no ticket stays words. */
+  const pieces = (k, parts, text) => (parts?.length
+    ? parts.map((p) => (p.filter && p.keys.length
+      ? filterToggle(v, { tile: k.label, count: p.filter }, p.text, `${p.filter}: ${p.keys.length} ticket${p.keys.length > 1 ? "s" : ""}`)
+      : p.text))
+    : text);
   return v.kpis.map((k) => el("div", { class: "kpi" },
     el("div", { class: "kpi-label" }, k.label),
-    el("div", { class: `kpi-value ${k.tone || ""}` }, k.value),
-    el("div", { class: "kpi-note" }, k.by_source?.length ? k.by_source.flatMap((s, i) => [i ? ", " : "", sourceToggle(s)]) : k.note)));
+    el("div", { class: `kpi-value ${k.tone || ""}` }, pieces(k, k.value_parts, k.value)),
+    el("div", { class: "kpi-note" }, k.by_source?.length ? k.by_source.flatMap((s, i) => [i ? ", " : "", sourceToggle(s)]) : pieces(k, k.note_parts, k.note))));
 }
 
 function health(h) {
@@ -601,26 +608,36 @@ function tableState(id) {
   return ui.tables[id] || (ui.tables[id] = { q: "", col: -1, asc: true, only: null });
 }
 
-/** Both filters name the same date and subset, or the same source. A filter
- * (`only`) is { date, atRisk } or { source }. */
-const sameFilter = (a, b) => Boolean(a && b && a.date === b.date && a.atRisk === b.atRisk && a.source === b.source);
-/** "source" or "date": what a filter limits the table by. */
-const filterKind = (only) => (only.source ? "source" : "date");
+/** Both filters name the same date and subset, the same source, or the same
+ * count on a tile. A filter (`only`) is { date, atRisk }, { source } or
+ * { tile, count }: a tile's label and the name of a count on it. */
+const sameFilter = (a, b) => Boolean(a && b && a.date === b.date && a.atRisk === b.atRisk && a.source === b.source && a.tile === b.tile && a.count === b.count);
+/** "source", "tile" or "date": what a filter limits the table by. */
+const filterKind = (only) => (only.source ? "source" : only.tile ? "tile" : "date");
+/** What the table shows again once a filter is lifted: every source, date or ticket. */
+const everyAgain = (only) => (only.tile ? "ticket" : filterKind(only));
 /** Finds a filter's toggle again after a render. */
-const filterId = (only) => (only.source ? `source:${only.source}` : `${only.date}:${only.atRisk}`);
+const filterId = (only) => (only.source ? `source:${only.source}` : only.tile ? `tile:${only.tile}:${only.count}` : `${only.date}:${only.atRisk}`);
 /** The date group a filter names, if the snapshot still has it. */
 const groupOf = (v, only) => v.date_groups.find((g) => g.date === only.date);
+/** The count on a tile a filter names, if the snapshot still has it. */
+function tileCount(v, only) {
+  const k = v.kpis.find((x) => x.label === only.tile);
+  return k && [...(k.value_parts || []), ...(k.note_parts || [])].find((p) => p.filter === only.count);
+}
 
-/** The keys a filter shows: a source's tickets, a date group's, or those putting it at risk. */
+/** The keys a filter shows: a source's tickets, a tile count's, a date group's, or those putting it at risk. */
 function filterKeys(v, only) {
   if (only.source) return new Set(v.items.filter((t) => t.source === only.source).map((t) => t.key));
+  if (only.tile) return new Set(tileCount(v, only)?.keys || []);
   const g = groupOf(v, only);
   return new Set(g ? (only.atRisk ? g.stalled : g.keys) : []);
 }
 
-/** "From DDN", "Due 1 Nov 2026", or "Due 1 Nov 2026, 13 not started or idle", from the view as it is now. */
+/** "From DDN", "S1", "Due 1 Nov 2026", or "Due 1 Nov 2026, 13 not started or idle", from the view as it is now. */
 function filterLabel(v, only) {
   if (only.source) return `From ${only.source}`;
+  if (only.tile) return only.count;
   const g = groupOf(v, only);
   return `Due ${fmtDate(only.date)}${only.atRisk && g && g.reason ? `, ${g.reason}` : ""}`;
 }
@@ -640,15 +657,17 @@ function filterToggle(v, only, text, label) {
 }
 
 /** Lifts a filter that the latest snapshot leaves empty (its date passed,
- * its tickets were re-dated, the group is no longer at risk, or no ticket
- * comes from its source any more), so the table never reads as empty when
- * the tickets still exist. */
+ * its tickets were re-dated, the group is no longer at risk, no ticket
+ * comes from its source any more, or its count on a tile fell to none), so
+ * the table never reads as empty when the tickets still exist. */
 function dropVanishedFilter(v) {
   const st = tableState(v.id);
   if (st.only && !filterKeys(v, st.only).size) {
     say(st.only.source
       ? `No ticket comes from ${st.only.source} any more; showing every source.`
-      : `No ticket matches the ${fmtDate(st.only.date)} date filter any more; showing every date.`);
+      : st.only.tile
+        ? `"${st.only.count}" counts no ticket any more; showing every ticket.`
+        : `No ticket matches the ${fmtDate(st.only.date)} date filter any more; showing every date.`);
     st.only = null;
   }
 }
@@ -668,18 +687,18 @@ function toggleGroup(v, only) {
     say(`${filterLabel(v, st.only)}: ${shown} of ${v.items.length} tickets shown.`);
   } else {
     document.querySelector(`[data-filter="${filterId(only)}"]`)?.focus();
-    say(`Showing every ${filterKind(only)}.`);
+    say(`Showing every ${everyAgain(only)}.`);
   }
 }
 
 /** Lifts the filter from its chip; focus goes to the search box beside it. */
 function clearFilter(v) {
   const st = tableState(v.id);
-  const kind = filterKind(st.only);
+  const every = everyAgain(st.only);
   st.only = null;
   closeEditor();
   document.querySelector(`#${ITEMS_ID} input[type="search"]`)?.focus();
-  say(`Showing every ${kind}.`);
+  say(`Showing every ${every}.`);
 }
 
 /** A table of `items` (the view's own unless given) called `name`, with the
