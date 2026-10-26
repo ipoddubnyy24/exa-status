@@ -503,6 +503,7 @@ pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'
         verdict,
         reason,
         per_item,
+        keys: input.items.iter().map(|t| t.key.clone()).collect(),
     }
 }
 

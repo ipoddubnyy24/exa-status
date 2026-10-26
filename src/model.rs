@@ -11,7 +11,7 @@ use url::Url;
 /// Version of the snapshot layout. The server serves a snapshot only when it
 /// matches, so a server built before a layout change never feeds its embedded
 /// page a snapshot written by a newer worker.
-pub(crate) const SNAPSHOT_FORMAT: u32 = 12;
+pub(crate) const SNAPSHOT_FORMAT: u32 = 13;
 
 /// A view (sub-tab). Notes name the views they concern, and the UI keeps the
 /// selected one across refreshes by its id.
@@ -585,6 +585,8 @@ pub(crate) struct Track {
     pub(crate) reason: String,
     /// Judged item by item rather than by projection.
     pub(crate) per_item: bool,
+    /// The open items it counts, which the page can limit its view to.
+    pub(crate) keys: Vec<IssueKey>,
 }
 
 /// How many tickets share a status.

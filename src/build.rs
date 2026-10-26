@@ -2575,6 +2575,31 @@ mod tests {
     }
 
     #[test]
+    fn each_release_lists_the_open_items_it_counts() {
+        let cfg = Config::default();
+        let snap = build(&raw());
+        let keys = |id: ViewId, name: &str| {
+            view(&snap, id)
+                .tracks
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| t.keys.iter().map(ToString::to_string).collect::<Vec<_>>())
+        };
+        let mut es6310: Vec<String> = (2..=cfg.small_release_max + 3)
+            .map(|i| format!("EX-{i}"))
+            .collect();
+        es6310.push("EX-1".into());
+
+        assert_eq!(keys(EXA6, "ES6.3.9_C1"), Some(vec!["EX-50".to_string()]));
+        assert_eq!(keys(EXA6, "ES6.3.10"), Some(es6310));
+        assert_eq!(
+            keys(EXA_SD, "NVMesh-P2"),
+            Some(vec!["EXM-1".to_string(), "EXM-9".to_string()]),
+            "Test items too"
+        );
+    }
+
+    #[test]
     fn tile_counts_name_the_tickets_they_count() {
         let mut raw = raw();
         for t in &mut raw.customers {

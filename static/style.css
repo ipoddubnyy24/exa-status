@@ -127,6 +127,9 @@ h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacin
 .track { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
 .track-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .track-head .chip { margin-left: auto; }
+.track-head .link-button { font: inherit; padding: 0; }
+.track.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.scope { margin: 6px 0; font-size: 13px; color: var(--accent); }
 .dates { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-top: 10px; }
 .date-value { font-weight: 600; }
 .reason { margin: 10px 0 0; color: var(--muted); font-size: 13px; }

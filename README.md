@@ -213,3 +213,8 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   date group's counts. Pressing it again, or the chip, lifts the filter; a
   newer snapshot keeps it with that count's tickets then, and drops it when
   it counts none.
+- Release scope: a view that judges several releases (EXA6, EXA SD) names
+  each on its card as a button that limits the view's blockers and item
+  tables to that release's open items; the tiles and the verdict stay the
+  view's. Pressing it again, or Show all, or the view's tab or sub-tab,
+  shows the whole view again.

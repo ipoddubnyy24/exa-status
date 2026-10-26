@@ -1217,3 +1217,90 @@ test("a tile filter follows newer snapshots, and is dropped when its count falls
   assert.equal(flash(page), '"No date" counts no ticket any more; showing every ticket.');
   assert.equal(tile(page, "Dated").querySelectorAll("button").length, 0, "a count of none is no button");
 });
+
+/** The sample snapshot whose EXA7 GA view shows two releases, each with an
+ * item, a blocker and a Test item of its own. */
+function withTwoReleases(snapshot) {
+  const ga = exa7Of(snapshot);
+  ga.tests = ["EX-17000", "EX-17001"].map((key) => ticket(key, { issue_type: "Test" }));
+  ga.tracks = [
+    track("ES6.3.10", { keys: ["EX-15181", "EX-16104", "EX-17000"] }),
+    track("ES6.3.9_C1", { keys: ["EX-15711", "EX-17001"] }),
+  ];
+  ga.blockers = [blockerOf("EX-15181", "Blocker"), blockerOf("EX-15711", "Past due 3d")];
+  return snapshot;
+}
+const C1 = "ES6.3.9_C1: 2 open items";
+const scopeLine = (page) => page.document.querySelector("#view .scope")?.textContent ?? null;
+
+test("on a view with several releases, a release's name limits the view to it, and its tab shows them all again", async () => {
+  const page = await openPage(new FakeServer(withTwoReleases(sampleSnapshot())));
+  await press(page, "Development");
+
+  await press(page, C1);
+
+  assert.equal(scopeLine(page), "Showing ES6.3.9_C1 only: its blockers and items. Show all of EXA7 GA");
+  assert.deepEqual(Object.keys(blockerChips(page)), ["EX-15711"]);
+  assert.deepEqual(rows(page), ["EX-15711"]);
+  assert.deepEqual(sectionRows(page, "1 ES6.3.9_C1 Test item"), ["EX-17001"]);
+  assert.deepEqual(page.document.querySelectorAll("#view .track.selected").map((t) => t.querySelector("strong").textContent), ["ES6.3.9_C1"]);
+  assert.equal(button(page, C1).getAttribute("aria-pressed"), "true");
+  assert.equal(flash(page), "Showing ES6.3.9_C1 only: 2 open items.");
+  assert.equal(focused(page), C1);
+  assert.ok(sections(page).includes("ES6.3.9_C1: 1 item"));
+
+  await press(page, "Development");
+
+  assert.equal(scopeLine(page), null);
+  assert.deepEqual(Object.keys(blockerChips(page)), ["EX-15181", "EX-15711"]);
+  assert.deepEqual(rows(page), ["EX-15181", "EX-16104", "EX-15711"]);
+  assert.ok(sections(page).includes("All 3 items"));
+});
+
+test("pressing a release's name again, or Show all, shows the whole view again", async () => {
+  const page = await openPage(new FakeServer(withTwoReleases(sampleSnapshot())));
+  await press(page, "Development");
+  await press(page, C1);
+
+  await press(page, C1);
+
+  assert.equal(scopeLine(page), null);
+  assert.deepEqual(rows(page), ["EX-15181", "EX-16104", "EX-15711"]);
+  assert.equal(flash(page), "Showing all of EXA7 GA.");
+  assert.equal(focused(page), C1);
+
+  await press(page, "ES6.3.10: 3 open items");
+  await press(page, "Show all of EXA7 GA");
+
+  assert.equal(scopeLine(page), null);
+  assert.deepEqual(rows(page), ["EX-15181", "EX-16104", "EX-15711"]);
+});
+
+test("a release scope follows newer snapshots, and is let go when its release has no open item", async () => {
+  const page = await openPage(new FakeServer(withTwoReleases(sampleSnapshot())));
+  await press(page, "Development");
+  await press(page, C1);
+  const moved = withTwoReleases(sampleSnapshot());
+  exa7Of(moved).tracks[1].keys = ["EX-16104"];
+
+  await publish(page, moved);
+
+  assert.deepEqual(rows(page), ["EX-16104"]);
+
+  const empty = withTwoReleases(sampleSnapshot());
+  exa7Of(empty).tracks[1].keys = [];
+  await publish(page, empty);
+
+  assert.equal(scopeLine(page), null);
+  assert.deepEqual(rows(page), ["EX-15181", "EX-16104", "EX-15711"]);
+  assert.equal(flash(page), "ES6.3.9_C1 has no open item any more; showing all of EXA7 GA.");
+});
+
+test("a view with one release offers no release to limit it to", async () => {
+  const snap = sampleSnapshot();
+  exa7Of(snap).tracks = [track("ES7.0.0", { keys: ["EX-15181"] })];
+  const page = await openPage(new FakeServer(snap));
+  await press(page, "Development");
+
+  assert.equal(page.document.querySelectorAll("#view .track button").length, 0);
+});

@@ -35,9 +35,13 @@ const ui = {
   // A snapshot arrived while the editor was open; render once it closes.
   stale: false,
   expanded: new Set(),
-  // Per view: text filter, sort, and `only` ({ date, atRisk }), which limits
-  // the table to one date group, or to the tickets putting it at risk.
+  // Per view: text filter, sort, and `only`, which limits the table to a
+  // date group (or the tickets putting it at risk), a source's tickets, or
+  // those a count on a tile counts.
   tables: {},
+  // Per view showing several releases: the one it is limited to, by name.
+  // A tab or sub-tab opens every view on all of its releases.
+  releases: {},
 };
 
 const prefs = {
@@ -195,6 +199,7 @@ function select(t, v) {
   prefs.set("tab", t);
   ui.viewId = v || prefs.get(`view:${t}`);
   if (v) prefs.set(`view:${t}`, v);
+  ui.releases = {};
   closeEditor();
 }
 
@@ -241,18 +246,69 @@ function section(title, body, id) {
 
 function renderView(v) {
   dropVanishedFilter(v);
+  const release = scopedRelease(v);
+  const inRelease = release && new Set(release.keys);
+  const scoped = (list) => (inRelease ? list.filter((t) => inRelease.has(t.key)) : list);
+  const named = (what) => (release ? `${release.name} ${what}` : what);
   const root = el("div", {});
   root.append(el("div", { class: "headline" }, chip(v.verdict), el("span", {}, v.summary)));
+  if (release) {
+    root.append(el("p", { class: "scope" }, `Showing ${release.name} only: its blockers and items. `,
+      el("button", { type: "button", class: "link-button", onclick: () => scopeRelease(v, null) }, `Show all of ${v.label}`)));
+  }
   for (const n of v.notes) root.append(el("p", { class: "note" }, n));
   root.append(section("Where we are", el("div", { class: "kpis" }, kpis(v), v.health ? health(v.health) : null)));
   if (v.kind === "customers") root.append(section("On track for the dates?", customerDates(v)));
-  if (v.kind === "release") root.append(section("On track for the proposed dates?", tracks(v.tracks)));
+  if (v.kind === "release") root.append(section("On track for the proposed dates?", tracks(v, release)));
   if (v.kind === "initiatives") root.append(section("On track for the proposed dates?", initiativeCards(v.initiatives)));
-  if (v.kind !== "initiatives") root.append(section("Immediate blockers", blockerList(v.id, v.blockers, BLOCKERS_SHOWN, `${v.label} blockers`)));
-  root.append(section(`All ${v.items.length} items`, itemTable(v), ITEMS_ID));
-  const tests = v.tests?.length;
-  if (tests) root.append(section(`${tests} Test item${tests > 1 ? "s" : ""}`, itemTable(v, { items: v.tests, stateId: `${v.id}:tests`, name: "Test items" })));
+  if (v.kind !== "initiatives") root.append(section("Immediate blockers", blockerList(v.id, scoped(v.blockers), BLOCKERS_SHOWN, `${v.label} ${named("blockers")}`)));
+  const items = scoped(v.items);
+  root.append(section(release ? `${release.name}: ${items.length} item${items.length === 1 ? "" : "s"}` : `All ${items.length} items`, itemTable(v, { items, name: named("items") }), ITEMS_ID));
+  const tests = scoped(v.tests || []);
+  if (tests.length) root.append(section(`${tests.length} ${named("Test")} item${tests.length > 1 ? "s" : ""}`, itemTable(v, { items: tests, stateId: `${v.id}:tests`, name: named("Test items") })));
   return root;
+}
+
+/** The release `v` is limited to, while the snapshot still counts open items
+ * in it; one it no longer does is let go, and the page says so. */
+function scopedRelease(v) {
+  const name = ui.releases[v.id];
+  if (!name) return null;
+  const release = (v.tracks || []).find((t) => t.name === name && t.keys?.length);
+  if (!release) {
+    delete ui.releases[v.id];
+    say(`${name} has no open item any more; showing all of ${v.label}.`);
+  }
+  return release || null;
+}
+
+/** Limits `v` to the release `name`, or shows all of it again (`name` null);
+ * focus stays on the release's name. */
+function scopeRelease(v, name) {
+  const was = ui.releases[v.id];
+  if (name) ui.releases[v.id] = name;
+  else delete ui.releases[v.id];
+  closeEditor();
+  const n = name ? v.tracks.find((t) => t.name === name).keys.length : 0;
+  say(name ? `Showing ${name} only: ${n} open item${n === 1 ? "" : "s"}.` : `Showing all of ${v.label}.`);
+  document.querySelector(`[data-release="${name || was}"]`)?.focus();
+}
+
+/** A release's name on its card, which limits the view to that release, or
+ * shows all of the view again once pressed. */
+function releaseToggle(v, t) {
+  const on = ui.releases[v.id] === t.name;
+  const n = t.keys?.length || 0;
+  if (!n) return t.name;
+  return el("button", {
+    type: "button",
+    class: "link-button",
+    "aria-pressed": on ? "true" : "false",
+    "aria-label": `${t.name}: ${n} open item${n === 1 ? "" : "s"}`,
+    "data-release": t.name,
+    title: on ? `Show all of ${v.label}` : `Show only ${t.name}: its blockers and items`,
+    onclick: () => scopeRelease(v, on ? null : t.name),
+  }, t.name);
 }
 
 /** The tiles. Each count of tickets on them, such as a source's or the S1
@@ -302,14 +358,16 @@ function dateCell(label, date, note, url) {
     note ? el("div", { class: "kpi-note" }, note) : null);
 }
 
-function trackCard(t, extra) {
+/** A release's or initiative's card; `name` replaces its plain name, and
+ * `selected` marks the release the view is limited to. */
+function trackCard(t, extra, name = null, selected = false) {
   const pmNote = t.pm
     ? `${t.pm.status || "no status"}, target "${t.pm.target || "none"}", page updated ${fmtDate(t.pm.updated)}`
     : t.pm_unread ? "the PM page could not be read" : "no PM page for this one";
   const projNote = t.per_item ? "for reference; judged per item" : (t.projected ? `${t.closed_per_week} closed per week` : "nothing closed in the window");
-  return el("div", { class: "track" },
+  return el("div", { class: `track${selected ? " selected" : ""}` },
     el("div", { class: "track-head" },
-      el("strong", {}, t.name),
+      el("strong", {}, name || t.name),
       el("span", { class: "muted" }, `${t.open} open, ${t.weighted} weighted`),
       chip(t.verdict)),
     el("div", { class: "dates" },
@@ -321,9 +379,12 @@ function trackCard(t, extra) {
     extra || null);
 }
 
-function tracks(list) {
-  if (!list.length) return el("p", { class: "muted" }, "No dated release.");
-  return el("div", { class: "tracks" }, list.map((t) => trackCard(t)));
+/** The release cards of `v`. With several, each name limits the view to its release. */
+function tracks(v, release) {
+  if (!v.tracks.length) return el("p", { class: "muted" }, "No dated release.");
+  const several = v.tracks.length > 1;
+  return el("div", { class: "tracks" }, v.tracks.map((t) =>
+    trackCard(t, null, several ? releaseToggle(v, t) : null, release?.name === t.name)));
 }
 
 function initiativeCards(cards) {

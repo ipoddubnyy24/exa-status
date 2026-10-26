@@ -1,4 +1,4 @@
-format 12
+format 13
 .duration_secs
 .format
 .generated_at
@@ -74,6 +74,7 @@ format 12
 .tabs[].views[].initiatives[].track.gap_days
 .tabs[].views[].initiatives[].track.gap_flagged
 .tabs[].views[].initiatives[].track.jira_date
+.tabs[].views[].initiatives[].track.keys
 .tabs[].views[].initiatives[].track.name
 .tabs[].views[].initiatives[].track.open
 .tabs[].views[].initiatives[].track.per_item
@@ -203,6 +204,7 @@ format 12
 .tabs[].views[].tracks[].gap_days
 .tabs[].views[].tracks[].gap_flagged
 .tabs[].views[].tracks[].jira_date
+.tabs[].views[].tracks[].keys
 .tabs[].views[].tracks[].name
 .tabs[].views[].tracks[].open
 .tabs[].views[].tracks[].per_item
