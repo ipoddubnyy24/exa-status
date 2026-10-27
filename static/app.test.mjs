@@ -17,7 +17,7 @@ const INDEX_HTML = readFileSync(new URL("index.html", import.meta.url), "utf8");
 const SCRIPTS = [...INDEX_HTML.matchAll(/<script src="\/([\w.]+)"><\/script>/g)]
   .map(([, file]) => [file, readFileSync(new URL(file, import.meta.url), "utf8")]);
 /** The page's own names the tests use besides the DOM. */
-const PAGE_NAMES = "ui, loadStatus, applyCommitment, fmtDate, stale, sevPri, idleSort, sameFilter, filterKeys, filterLabel";
+const PAGE_NAMES = "ui, loadStatus, applyCommitment, fmtDate, fmtTime, stale, sevPri, idleSort, sameFilter, filterKeys, filterLabel";
 
 /** The part of a DOM node the page uses. */
 class FakeNode {
@@ -529,6 +529,14 @@ test("fmtDate shows day, month and year, and none for no date", async () => {
   assert.equal(fmtDate("2026-01-09T23:30:00+03:00"), "9 Jan 2026", "the date as written, not converted");
   assert.equal(fmtDate(null), "none");
   assert.equal(fmtDate(""), "none");
+});
+
+test("fmtTime shows the time on the 24-hour clock, midnight as 00", async () => {
+  const { fmtTime } = await openPage();
+
+  assert.equal(fmtTime("2026-10-27T17:05:00"), "17:05");
+  assert.equal(fmtTime("2026-10-27T00:30:00"), "00:30");
+  assert.equal(fmtTime(null), "");
 });
 
 for (const [name, minutes, ageMinutes, expected] of [

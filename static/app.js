@@ -70,7 +70,8 @@ const fmtDate = (iso) => {
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
   return `${d} ${MONTHS[m - 1]} ${y}`;
 };
-const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+/** "17:05", "00:30": a time of day on the 24-hour clock, whatever the locale. */
+const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }) : "");
 const sameDay = (a, b) => a.toDateString() === b.toDateString();
 /** "18:04" today, "Fri 23 Oct 18:04" on another day. */
 const fmtWhen = (iso) => {
