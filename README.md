@@ -20,7 +20,7 @@ time (`data/refresh.lock`); a second one stops with an error.
 line; it still updates the caches.
 
 `serve` refreshes when the snapshot is older than `refresh_minutes` (default
-30; 0 means by hand only) and on "Refresh now"; a failed refresh is retried
+480, every 8 hours; 0 means by hand only) and on "Refresh now"; a failed refresh is retried
 after one interval. A request for a refresh while one runs (including saving
 a committed date) queues one more. Each refresh runs as a separate
 `refresh-once` process on the server's own data directory and commitments

@@ -242,7 +242,7 @@ class FakeServer {
       interval_minutes: 30,
       refresh: null,
     };
-    this.settings = { refresh_minutes: 30, choices: [0, 15, 30, 60], max_note_chars: 500 };
+    this.settings = { refresh_minutes: 480, choices: [0, 15, 30, 60, 480], max_note_chars: 500 };
     /** The changes the page sent, oldest first. */
     this.posted = [];
   }
@@ -1303,4 +1303,12 @@ test("a view with one release offers no release to limit it to", async () => {
   await press(page, "Development");
 
   assert.equal(page.document.querySelectorAll("#view .track button").length, 0);
+});
+
+test("the refresh interval offers every 8 hours, and shows the one in use", async () => {
+  const page = await openPage();
+  const select = page.document.querySelector("#meta select");
+
+  assert.deepEqual(select.querySelectorAll("option").map((o) => o.textContent), ["By hand", "Every 15 min", "Every 30 min", "Every 60 min", "Every 8 hours"]);
+  assert.deepEqual(select.querySelectorAll("option").filter((o) => o.getAttribute("selected") !== null).map((o) => o.textContent), ["Every 8 hours"]);
 });

@@ -162,6 +162,9 @@ async function setRefreshInterval(minutes) {
   }
 }
 
+/** "By hand", "Every 30 min", "Every 8 hours": a refresh interval in minutes. */
+const intervalName = (m) => (m === 0 ? "By hand" : m > 60 && m % 60 === 0 ? `Every ${m / 60} hours` : `Every ${m} min`);
+
 function renderMeta() {
   const meta = $("meta");
   meta.replaceChildren();
@@ -182,7 +185,7 @@ function renderMeta() {
   if (st && st.failed) meta.append(el("span", { class: "err", title: "See data/refresh.log" }, "Last refresh failed"));
   if (ui.settings) {
     const select = el("select", { "aria-label": "Refresh interval", onchange: (e) => setRefreshInterval(Number(e.target.value)) },
-      ui.settings.choices.map((m) => el("option", { value: String(m), selected: m === ui.settings.refresh_minutes }, m === 0 ? "By hand" : `Every ${m} min`)));
+      ui.settings.choices.map((m) => el("option", { value: String(m), selected: m === ui.settings.refresh_minutes }, intervalName(m))));
     meta.append(select);
   }
   meta.append(el("button", { type: "button", onclick: refreshNow }, st && st.refreshing ? "Refreshing" : "Refresh now"));

@@ -22,7 +22,9 @@ pub(crate) const CONFIG_ENV: &str = "EXA_STATUS_CONFIG";
 /// Default config file, relative to the working directory.
 pub(crate) const CONFIG_FILE: &str = "config.local.json";
 /// Refresh intervals the UI offers, in minutes; 0 means by hand only.
-pub(crate) const REFRESH_CHOICES: [u64; 4] = [0, 15, 30, 60];
+pub(crate) const REFRESH_CHOICES: [u64; 5] = [0, 15, 30, 60, EVERY_8_HOURS];
+/// The default refresh interval, in minutes.
+const EVERY_8_HOURS: u64 = 8 * 60;
 /// Key of the refresh interval in the config file.
 pub(crate) const REFRESH_KEY: &str = "refresh_minutes";
 /// EXA Reporter's address when the config does not name one.
@@ -395,7 +397,7 @@ impl Default for Config {
             // Next to EXA Reporter's 9835.
             port: 9836,
             // The 30-60 minutes asked for; the page offers 15 to 60.
-            refresh_minutes: 30,
+            refresh_minutes: EVERY_8_HOURS,
             data_dir: PathBuf::from("data"),
             cert_dir: PathBuf::from("certs"),
             commitments_file: PathBuf::from("commitments.json"),
@@ -767,6 +769,7 @@ mod tests {
     #[test]
     fn an_empty_file_gives_the_defaults_and_they_are_valid() {
         assert_eq!(Config::parse("{}").unwrap(), Config::default());
+        assert_eq!(Config::default().refresh_minutes, 480, "every 8 hours");
     }
 
     #[test]
@@ -790,7 +793,7 @@ mod tests {
         );
     }
 
-    #[test_case(r#"{"refresh_minutes": 7}"#, "refresh_minutes must be one of [0, 15, 30, 60], not 7" ; "unoffered interval")]
+    #[test_case(r#"{"refresh_minutes": 7}"#, "refresh_minutes must be one of [0, 15, 30, 60, 480], not 7" ; "unoffered interval")]
     #[test_case(r#"{"host": "0.0.0.0"}"#, "host must be 127.0.0.1 or ::1, not 0.0.0.0" ; "network-wide listener")]
     #[test_case(r#"{"host": "127.0.0.2"}"#, "host must be 127.0.0.1 or ::1, not 127.0.0.2" ; "loopback the certificate does not name")]
     #[test_case(r#"{"closed_window_days": 0}"#, "closed_window_days must be at least 1" ; "empty closing window")]
@@ -986,7 +989,7 @@ mod tests {
     #[test_case(Some("not json"), 15, "the config file is not valid JSON" ; "corrupt file is kept")]
     #[test_case(Some("[1, 2]"), 15, "the config file is not a JSON object" ; "array is kept")]
     #[test_case(Some(r#"{"host": "0.0.0.0"}"#), 15, "the updated config would not load" ; "invalid file is kept")]
-    #[test_case(None, 45, "refresh_minutes must be one of [0, 15, 30, 60], not 45" ; "unoffered value")]
+    #[test_case(None, 45, "refresh_minutes must be one of [0, 15, 30, 60, 480], not 45" ; "unoffered value")]
     fn setting_the_interval_refuses_to_clobber(
         existing: Option<&str>,
         minutes: u64,

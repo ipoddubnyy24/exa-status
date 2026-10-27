@@ -1037,7 +1037,7 @@ mod tests {
         .await;
         assert_eq!(
             now,
-            json!({"refresh_minutes": 15, "choices": [0, 15, 30, 60], "max_note_chars": MAX_NOTE_CHARS})
+            json!({"refresh_minutes": 15, "choices": [0, 15, 30, 60, 480], "max_note_chars": MAX_NOTE_CHARS})
         );
     }
 
