@@ -1312,3 +1312,31 @@ test("the refresh interval offers every 8 hours, and shows the one in use", asyn
   assert.deepEqual(select.querySelectorAll("option").map((o) => o.textContent), ["By hand", "Every 15 min", "Every 30 min", "Every 60 min", "Every 8 hours"]);
   assert.deepEqual(select.querySelectorAll("option").filter((o) => o.getAttribute("selected") !== null).map((o) => o.textContent), ["Every 8 hours"]);
 });
+
+test("a release view's tile counts filter its table, and closed or added counts open their Jira search", async () => {
+  const snap = sampleSnapshot();
+  const jira = "https://jira.example/issues/?jql=key+in+%28EX-90%2C+EX-91%29+ORDER+BY+key";
+  exa7Of(snap).kpis = [
+    {
+      label: "Blocker priority", value: "1", note: "+0 blocked", tone: "danger", by_source: [],
+      value_parts: [countOf("1", "Blocker priority", ["EX-16104"])],
+      note_parts: [words("+"), countOf("0 blocked", "Blocked", [])],
+    },
+    {
+      label: "Last 28 days", value: "-2 / +0", note: "closed / added (new or moved in)", tone: null, by_source: [],
+      value_parts: [{ ...words("-2"), url: jira }, words(" / "), words("+0")],
+      note_parts: [],
+    },
+  ];
+  const page = await openPage(new FakeServer(snap));
+  await press(page, "Development");
+
+  await press(page, "Blocker priority: 1 ticket");
+
+  assert.deepEqual(rows(page), ["EX-16104"]);
+  assert.equal(filterChip(page), "Blocker priority");
+  assert.equal(tile(page, "Blocker priority").querySelectorAll("button").length, 1, "0 blocked stays words");
+  const closed = tile(page, "Last 28 days").querySelector("a");
+  assert.deepEqual([closed.textContent, closed.getAttribute("href"), closed.getAttribute("target")], ["-2", jira, "_blank"]);
+  assert.equal(tile(page, "Last 28 days").querySelector(".kpi-note").textContent, "closed / added (new or moved in)");
+});

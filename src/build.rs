@@ -4,6 +4,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use url::Url;
 
 use crate::config::{Config, TagFamily};
 use crate::confluence::PmPage;
@@ -207,12 +208,16 @@ fn kpi(label: &str, value: String, note: String, tone: Option<Tone>) -> Kpi {
 
 /// A tile whose value and note are made of pieces, some of them counts.
 fn tile(label: &str, value: Vec<TilePart>, note: Vec<TilePart>, tone: Option<Tone>) -> Kpi {
-    let text = |parts: &[TilePart]| parts.iter().map(|p| p.text.as_str()).collect();
     Kpi {
         value_parts: value.clone(),
         note_parts: note.clone(),
-        ..kpi(label, text(&value), text(&note), tone)
+        ..kpi(label, text_of(&value), text_of(&note), tone)
     }
+}
+
+/// What a tile shows of `parts`.
+fn text_of(parts: &[TilePart]) -> String {
+    parts.iter().map(|p| p.text.as_str()).collect()
 }
 
 /// Words on a tile.
@@ -221,7 +226,18 @@ fn words(text: impl Into<String>) -> TilePart {
         text: text.into(),
         filter: None,
         keys: Vec::new(),
+        url: None,
     }
+}
+
+/// A count on a tile of tickets no table here shows, linked to their Jira search.
+fn linked(text: String, url: Option<Url>) -> TilePart {
+    TilePart { url, ..words(text) }
+}
+
+/// The tickets of `tickets` that `keep` keeps.
+fn subset<'t>(tickets: &[&'t Ticket], keep: impl Fn(&Ticket) -> bool) -> Vec<&'t Ticket> {
+    tickets.iter().copied().filter(|t| keep(t)).collect()
 }
 
 /// A count of the tickets `keys` on a tile, shown as `text`; the table's
@@ -231,6 +247,7 @@ fn count_of(text: String, filter: &str, keys: Vec<IssueKey>) -> TilePart {
         text,
         filter: Some(filter.into()),
         keys,
+        url: None,
     }
 }
 
@@ -314,11 +331,11 @@ fn keep_date(releases: &mut ReleaseDates, judged: &Judged<'_>) {
 }
 
 /// Closures and additions during the closing window.
-#[derive(Clone, Copy)]
 struct Window {
-    closed: usize,
-    /// `None` when the "added" query could not be read.
-    added: Option<usize>,
+    /// The items closed.
+    closed: Vec<IssueKey>,
+    /// The items added; `None` when the "added" query could not be read.
+    added: Option<Vec<IssueKey>>,
 }
 
 /// Shared inputs of the view builders.
@@ -518,9 +535,21 @@ impl<'a> Context<'a> {
     /// Closures and additions of a view's `versions` in the window.
     fn window(&self, view: ViewId, closed: &KeysByVersion, versions: &[String]) -> Window {
         Window {
-            closed: count_in(closed, versions),
-            added: self.raw.added.get(&view).copied().flatten(),
+            closed: keys_in(closed, versions),
+            added: self.raw.added.get(&view).cloned().flatten(),
         }
+    }
+
+    /// A Jira search for the tickets `keys`; none for none.
+    fn jira_search(&self, keys: &[IssueKey]) -> Option<Url> {
+        if keys.is_empty() {
+            return None;
+        }
+        let mut url = self.raw.jira_cloud.join("issues/").ok()?;
+        let list: Vec<&str> = keys.iter().map(IssueKey::as_str).collect();
+        url.query_pairs_mut()
+            .append_pair("jql", &format!("key in ({}) ORDER BY key", list.join(", ")));
+        Some(url)
     }
 
     fn customer_view(&self, id: ViewId, mut items: Vec<Ticket>, editable: bool) -> View {
@@ -1076,12 +1105,21 @@ impl<'a> Context<'a> {
         // says how many those are; closures and additions count only items
         // in the phases.
         if let Some(open) = sd_view.kpis.first_mut() {
-            open.value = (sd_open.len() - tests).to_string();
-            open.note = if tests == 1 {
-                "1 is a Test item".into()
-            } else {
-                format!("{tests} are Test items")
-            };
+            let work: Vec<&Ticket> = sd_open.iter().filter(|t| !rules::is_test_case(t)).collect();
+            *open = tile(
+                "Open scope",
+                vec![count_of(
+                    work.len().to_string(),
+                    "Open scope",
+                    keys_of(&work),
+                )],
+                vec![words(if tests == 1 {
+                    "1 is a Test item".to_string()
+                } else {
+                    format!("{tests} are Test items")
+                })],
+                None,
+            );
         }
         if let Some(window) = sd_view.kpis.last_mut() {
             window.note = "closed / added in the phases (new or moved in)".into();
@@ -1114,53 +1152,70 @@ impl<'a> Context<'a> {
     ) -> View {
         let cfg = self.cfg;
         let today = self.today;
-        let complete = items.iter().filter(|t| rules::is_complete(t)).count();
+        let complete = subset(items, rules::is_complete);
         // A patch in review puts an item in review, whatever its Jira status.
-        let review = items
-            .iter()
-            .filter(|t| {
-                !rules::is_complete(t) && (t.delivery.is_some() || cfg.in_review(&t.status))
-            })
-            .count();
-        let tests = items.iter().filter(|t| rules::is_test_case(t)).count();
-        // The risk numbers leave out test cases and complete items.
-        let work: Vec<&&Ticket> = items
-            .iter()
-            .filter(|t| !rules::is_test_case(t) && !rules::is_complete(t))
-            .collect();
-        let blocker_priority = work
-            .iter()
-            .filter(|t| rules::has_priority(t, BLOCKER))
-            .count();
-        let blocked = work.iter().filter(|t| rules::is_blocked_status(t)).count();
-        let critical = work
-            .iter()
-            .filter(|t| rules::has_priority(t, CRITICAL))
-            .count();
-        let complete_work = items.len() - tests - work.len();
-        let uncounted: Vec<String> = [(tests, "test cases"), (complete_work, "complete")]
-            .into_iter()
-            .filter(|(n, _)| *n > 0)
-            .map(|(n, what)| format!("{n} {what}"))
-            .collect();
-        let uncounted_note = if uncounted.is_empty() {
-            String::new()
-        } else {
-            format!(", {} not counted", uncounted.join(" and "))
+        let review = subset(items, |t| {
+            !rules::is_complete(t) && (t.delivery.is_some() || cfg.in_review(&t.status))
+        });
+        let tests = subset(items, rules::is_test_case).len();
+        // The risk numbers leave out test cases and complete items, and say so.
+        let work = subset(items, |t| !rules::is_test_case(t) && !rules::is_complete(t));
+        let complete_work = subset(&complete, |t| !rules::is_test_case(t));
+        let left_out = |what: &str| {
+            count_of(
+                format!("{} complete", complete_work.len()),
+                &format!("Complete, not counted in {what}"),
+                keys_of(&complete_work),
+            )
         };
-        let s1 = work
-            .iter()
-            .filter(|t| t.severity_level() == Some(1))
-            .count();
-        let s2 = work
-            .iter()
-            .filter(|t| t.severity_level() == Some(2))
-            .count();
-        let with_due = work.iter().filter(|t| t.due.is_some()).count();
-        let past_due = work
-            .iter()
-            .filter(|t| t.due.is_some_and(|d| d < today))
-            .count();
+        let uncounted = |what: &str| -> Vec<TilePart> {
+            match (tests, complete_work.is_empty()) {
+                (0, true) => Vec::new(),
+                (n, true) => vec![words(format!(", {n} test cases not counted"))],
+                (0, false) => vec![words(", "), left_out(what), words(" not counted")],
+                (n, false) => vec![
+                    words(format!(", {n} test cases and ")),
+                    left_out(what),
+                    words(" not counted"),
+                ],
+            }
+        };
+        let blocker_priority = subset(&work, |t| rules::has_priority(t, BLOCKER));
+        let blocked = subset(&work, rules::is_blocked_status);
+        let critical = subset(&work, |t| rules::has_priority(t, CRITICAL));
+        let s1 = subset(&work, |t| t.severity_level() == Some(1));
+        let s2 = subset(&work, |t| t.severity_level() == Some(2));
+        let with_due = subset(&work, |t| t.due.is_some());
+        let past_due = subset(&work, |t| t.due.is_some_and(|d| d < today));
+        let review_part = count_of(
+            format!("{} in review or verification", review.len()),
+            "In review or verification",
+            keys_of(&review),
+        );
+        let open_note = if complete.is_empty() {
+            vec![review_part]
+        } else {
+            vec![
+                count_of(
+                    format!("{} complete", complete.len()),
+                    "Complete",
+                    keys_of(&complete),
+                ),
+                words(", "),
+                review_part,
+            ]
+        };
+        let last_days = vec![
+            linked(
+                format!("-{}", window.closed.len()),
+                self.jira_search(&window.closed),
+            ),
+            words(" / "),
+            window.added.as_ref().map_or_else(
+                || words("+?"),
+                |keys| linked(format!("+{}", keys.len()), self.jira_search(keys)),
+            ),
+        ];
         let verdict = tracks
             .iter()
             .map(|t| t.verdict)
@@ -1171,9 +1226,6 @@ impl<'a> Context<'a> {
             |t| format!("{}: {}", t.name, t.reason),
         );
         let blockers = rules::release_blockers(cfg, today, items);
-        let added = window
-            .added
-            .map_or_else(|| "?".to_string(), |a| a.to_string());
         let mut sorted: Vec<Ticket> = items.iter().map(|&t| t.clone()).collect();
         sorted.sort_by(|a, b| {
             rules::priority_rank(a)
@@ -1189,40 +1241,85 @@ impl<'a> Context<'a> {
             verdict,
             summary,
             kpis: vec![
-                kpi(
+                tile(
                     "Open scope",
-                    items.len().to_string(),
-                    if complete > 0 {
-                        format!("{complete} complete, {review} in review or verification")
-                    } else {
-                        format!("{review} in review or verification")
-                    },
+                    vec![count_of(
+                        items.len().to_string(),
+                        "Open scope",
+                        keys_of(items),
+                    )],
+                    open_note,
                     None,
                 ),
-                kpi(
+                tile(
                     "Blocker priority",
-                    blocker_priority.to_string(),
-                    format!("+{blocked} blocked{uncounted_note}"),
-                    (blocker_priority > 0).then_some(Tone::Danger),
+                    vec![count_of(
+                        blocker_priority.len().to_string(),
+                        "Blocker priority",
+                        keys_of(&blocker_priority),
+                    )],
+                    [
+                        vec![
+                            words("+"),
+                            count_of(
+                                format!("{} blocked", blocked.len()),
+                                "Blocked",
+                                keys_of(&blocked),
+                            ),
+                        ],
+                        uncounted("Blocker priority"),
+                    ]
+                    .concat(),
+                    (!blocker_priority.is_empty()).then_some(Tone::Danger),
                 ),
-                kpi(
+                tile(
                     "Critical",
-                    critical.to_string(),
-                    format!("S1 {s1}, S2 {s2}{uncounted_note}"),
+                    vec![count_of(
+                        critical.len().to_string(),
+                        "Critical",
+                        keys_of(&critical),
+                    )],
+                    [
+                        vec![
+                            count_of(format!("S1 {}", s1.len()), "S1", keys_of(&s1)),
+                            words(", "),
+                            count_of(format!("S2 {}", s2.len()), "S2", keys_of(&s2)),
+                        ],
+                        uncounted("Critical"),
+                    ]
+                    .concat(),
                     None,
                 ),
-                kpi(
+                tile(
                     "Past due date",
-                    past_due.to_string(),
-                    format!("of {with_due} with a date{uncounted_note}"),
+                    vec![count_of(
+                        past_due.len().to_string(),
+                        "Past due date",
+                        keys_of(&past_due),
+                    )],
+                    [
+                        vec![
+                            words("of "),
+                            count_of(
+                                format!("{} with a date", with_due.len()),
+                                "With a due date",
+                                keys_of(&with_due),
+                            ),
+                        ],
+                        uncounted("Past due date"),
+                    ]
+                    .concat(),
                     None,
                 ),
-                kpi(
-                    &format!("Last {} days", cfg.closed_window_days),
-                    format!("-{} / +{added}", window.closed),
-                    "closed / added (new or moved in)".into(),
-                    None,
-                ),
+                Kpi {
+                    value_parts: last_days.clone(),
+                    ..kpi(
+                        &format!("Last {} days", cfg.closed_window_days),
+                        text_of(&last_days),
+                        "closed / added (new or moved in)".into(),
+                        None,
+                    )
+                },
             ],
             tracks,
             date_groups: Vec::new(),
@@ -1305,11 +1402,20 @@ impl<'a> Context<'a> {
             .map(|c| c.track.verdict)
             .max()
             .unwrap_or(Verdict::NoDate);
-        let behind = cards
+        let refs: Vec<&Ticket> = items.iter().collect();
+        let behind: Vec<&InitiativeCard> = cards
             .iter()
             .filter(|c| c.track.verdict >= Verdict::AtRisk)
-            .count();
-        let blockers: usize = cards.iter().map(|c| c.blockers.len()).sum();
+            .collect();
+        let behind_keys: BTreeSet<IssueKey> = behind
+            .iter()
+            .flat_map(|c| c.track.keys.iter().cloned())
+            .collect();
+        // A ticket blocking two initiatives counts once.
+        let blockers: BTreeSet<IssueKey> = cards
+            .iter()
+            .flat_map(|c| c.blockers.iter().map(|b| b.key.clone()))
+            .collect();
         let summary = cards
             .iter()
             .find(|c| c.track.verdict == verdict)
@@ -1324,23 +1430,39 @@ impl<'a> Context<'a> {
             verdict,
             summary,
             kpis: vec![
-                kpi(
+                tile(
                     "Initiatives",
-                    cards.len().to_string(),
-                    format!("{behind} at risk or off track"),
+                    vec![count_of(
+                        cards.len().to_string(),
+                        "Initiatives",
+                        keys_of(&refs),
+                    )],
+                    vec![count_of(
+                        format!("{} at risk or off track", behind.len()),
+                        "Initiatives at risk or off track",
+                        behind_keys.into_iter().collect(),
+                    )],
                     None,
                 ),
-                kpi(
+                tile(
                     "Open items",
-                    items.len().to_string(),
-                    "across every initiative".into(),
+                    vec![count_of(
+                        items.len().to_string(),
+                        "Open items",
+                        keys_of(&refs),
+                    )],
+                    vec![words("across every initiative")],
                     None,
                 ),
-                kpi(
+                tile(
                     "Blockers",
-                    blockers.to_string(),
-                    "test cases not counted".into(),
-                    (blockers > 0).then_some(Tone::Danger),
+                    vec![count_of(
+                        blockers.len().to_string(),
+                        "Blockers",
+                        blockers.iter().cloned().collect(),
+                    )],
+                    vec![words("test cases not counted")],
+                    (!blockers.is_empty()).then_some(Tone::Danger),
                 ),
             ],
             tracks: Vec::new(),
@@ -1370,12 +1492,19 @@ fn pm_gap(page: &PmPage, label: Option<&str>) -> String {
 }
 
 /// Distinct keys across `names` in a per-fixVersion key map.
-fn count_in(map: &KeysByVersion, names: &[String]) -> usize {
+fn keys_in(map: &KeysByVersion, names: &[String]) -> Vec<IssueKey> {
     names
         .iter()
         .flat_map(|n| map.get(n).into_iter().flatten())
+        .cloned()
         .collect::<BTreeSet<_>>()
-        .len()
+        .into_iter()
+        .collect()
+}
+
+/// How many distinct keys `names` hold in a per-fixVersion key map.
+fn count_in(map: &KeysByVersion, names: &[String]) -> usize {
+    keys_in(map, names).len()
 }
 
 #[cfg(test)]
@@ -1588,11 +1717,15 @@ mod tests {
             scopes: BTreeMap::new(),
             sd_closed: keys(&[("NVMesh-P2", &["EXM-90", "EXM-91"])]),
             added: BTreeMap::from([
-                (EXA6, Some(2)),
-                (EXA7_BETA, Some(0)),
-                (EXA7_GA, Some(0)),
+                (
+                    EXA6,
+                    Some(vec!["EX-2".parse().unwrap(), "EX-80".parse().unwrap()]),
+                ),
+                (EXA7_BETA, Some(vec![])),
+                (EXA7_GA, Some(vec![])),
                 (EXA_SD, None),
             ]),
+            jira_cloud: Url::parse("https://jira.example/").unwrap(),
             unscheduled: Some(395),
             pm_pages: HashMap::new(),
             fixes: [
@@ -2575,6 +2708,83 @@ mod tests {
     }
 
     #[test]
+    fn release_and_future_tile_counts_name_their_tickets() {
+        let cfg = Config::default();
+        let snap = build(&raw());
+        let parts = |id: ViewId, label: &str| {
+            let k = view(&snap, id)
+                .kpis
+                .iter()
+                .find(|k| k.label == label)
+                .unwrap();
+            k.value_parts
+                .iter()
+                .chain(&k.note_parts)
+                .filter(|p| p.filter.is_some() || p.url.is_some())
+                .map(|p| {
+                    let keys: Vec<&str> = p.keys.iter().map(IssueKey::as_str).collect();
+                    let url = p.url.as_ref().map(ToString::to_string).unwrap_or_default();
+                    format!(
+                        "{} | {} | {} | {url}",
+                        p.text,
+                        p.filter.as_deref().unwrap_or(""),
+                        keys.join(" ")
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let in_review: Vec<String> = (2..=cfg.small_release_max + 3)
+            .map(|i| format!("EX-{i}"))
+            .collect();
+
+        assert_eq!(
+            parts(EXA6, "Open scope"),
+            [
+                format!("9 | Open scope | EX-50 {} EX-1 | ", in_review.join(" ")),
+                format!(
+                    "{} in review or verification | In review or verification | {} | ",
+                    in_review.len(),
+                    in_review.join(" ")
+                ),
+            ]
+        );
+        assert_eq!(
+            parts(EXA6, "Blocker priority"),
+            [
+                "1 | Blocker priority | EX-1 | ",
+                "0 blocked | Blocked |  | "
+            ]
+        );
+        // Closed and added items are not in the tables: they link to Jira.
+        assert_eq!(
+            parts(EXA6, "Last 28 days"),
+            [
+                "-4 |  |  | https://jira.example/issues/?jql=key+in+%28EX-90%2C+EX-91%2C+EX-92%2C+EX-93%29+ORDER+BY+key",
+                "+2 |  |  | https://jira.example/issues/?jql=key+in+%28EX-2%2C+EX-80%29+ORDER+BY+key",
+            ]
+        );
+        assert_eq!(
+            view(&snap, EXA6)
+                .kpis
+                .last()
+                .map(|k| (k.value.as_str(), k.note.as_str())),
+            Some(("-4 / +2", "closed / added (new or moved in)")),
+            "the tile reads as before"
+        );
+        assert_eq!(
+            parts(EXA7_BETA, "Last 28 days"),
+            ["-1 |  |  | https://jira.example/issues/?jql=key+in+%28EX-94%29+ORDER+BY+key"],
+            "+0 links nowhere"
+        );
+        assert_eq!(
+            parts(EXA_SD, "Open scope"),
+            ["1 | Open scope | EXM-1 | "],
+            "EXA SD counts its items other than Test items"
+        );
+        assert_eq!(parts(FUTURE, "Open items"), ["1 | Open items | EXM-500 | "]);
+    }
+
+    #[test]
     fn each_release_lists_the_open_items_it_counts() {
         let cfg = Config::default();
         let snap = build(&raw());
@@ -2757,6 +2967,25 @@ mod tests {
         assert_eq!(
             tile(&with, EXA6, "Blocker priority"),
             Some(("0".into(), "+0 blocked, 3 complete not counted".into()))
+        );
+        let left_out = view(&with, EXA6)
+            .kpis
+            .iter()
+            .find(|k| k.label == "Blocker priority")
+            .and_then(|k| k.note_parts.iter().find(|p| p.text == "3 complete"))
+            .map(|p| {
+                (
+                    p.filter.clone(),
+                    p.keys.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                )
+            });
+        assert_eq!(
+            left_out,
+            Some((
+                Some("Complete, not counted in Blocker priority".to_string()),
+                vec!["EX-2".to_string(), "EX-3".to_string(), "EX-1".to_string()]
+            )),
+            "what a tile leaves out can be shown too"
         );
         assert_eq!(
             tile(&with, EXA6, "Open scope").map(|(_, note)| note),

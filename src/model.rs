@@ -11,7 +11,7 @@ use url::Url;
 /// Version of the snapshot layout. The server serves a snapshot only when it
 /// matches, so a server built before a layout change never feeds its embedded
 /// page a snapshot written by a newer worker.
-pub(crate) const SNAPSHOT_FORMAT: u32 = 13;
+pub(crate) const SNAPSHOT_FORMAT: u32 = 14;
 
 /// A view (sub-tab). Notes name the views they concern, and the UI keeps the
 /// selected one across refreshes by its id.
@@ -510,6 +510,8 @@ pub(crate) struct TilePart {
     pub(crate) filter: Option<String>,
     /// For a count: the tickets it counts.
     pub(crate) keys: Vec<IssueKey>,
+    /// For a count of tickets no table here shows: a Jira search for them.
+    pub(crate) url: Option<Url>,
 }
 
 /// How many of a view's tickets came from one customer source.

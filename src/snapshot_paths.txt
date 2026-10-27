@@ -1,4 +1,4 @@
-format 13
+format 14
 .duration_secs
 .format
 .generated_at
@@ -156,12 +156,14 @@ format 13
 .tabs[].views[].kpis[].note_parts[].filter
 .tabs[].views[].kpis[].note_parts[].keys
 .tabs[].views[].kpis[].note_parts[].text
+.tabs[].views[].kpis[].note_parts[].url
 .tabs[].views[].kpis[].tone
 .tabs[].views[].kpis[].value
 .tabs[].views[].kpis[].value_parts
 .tabs[].views[].kpis[].value_parts[].filter
 .tabs[].views[].kpis[].value_parts[].keys
 .tabs[].views[].kpis[].value_parts[].text
+.tabs[].views[].kpis[].value_parts[].url
 .tabs[].views[].label
 .tabs[].views[].notes
 .tabs[].views[].pm

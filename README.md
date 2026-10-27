@@ -206,13 +206,17 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   `verification_labels` (awaiting_validation, which NVDCSE tickets use) is
   highlighted in the item tables, with that status or label as a pill; as
   an immediate blocker it is marked "Awaiting verification".
-- Table filters: in a customer view, each count on the Where we are tiles
-  limits the table below to the tickets it counts: a source's (Open), S1,
+- Table filters: each count on the Where we are tiles limits the item
+  table below to the tickets it counts. Customers: a source's (Open), S1,
   S2 and those past the idle limit, idle over 7 or 30 days or unknown, fix
-  complete and due in the next tag, and those with no date (Dated). So do a
-  date group's counts. Pressing it again, or the chip, lifts the filter; a
-  newer snapshot keeps it with that count's tickets then, and drops it when
-  it counts none.
+  complete and due in the next tag, and those with no date (Dated); so do a
+  date group's counts. Releases: open scope, complete, in review or
+  verification, Blocker priority, blocked, Critical, S1, S2, past due and
+  with a date. Future work: the initiatives' items, those of the ones at
+  risk or off track, and the blockers. Closed and added items, which no
+  table shows, open their Jira search instead. Pressing a count again, or
+  the chip, lifts the filter; a newer snapshot keeps it with that count's
+  tickets then, and drops it when it counts none.
 - Release scope: a view that judges several releases (EXA6, EXA SD) names
   each on its card as a button that limits the view's blockers and item
   tables to that release's open items; the tiles and the verdict stay the

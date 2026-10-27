@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::warn;
+use url::Url;
 
 use crate::commitments::{self, Commitments};
 use crate::config::{Config, InitiativeConfig, TagFamily};
@@ -115,7 +116,9 @@ pub(crate) struct RawData {
     pub(crate) sd_closed: KeysByVersion,
     /// Items added to each release view in the window (created, or moved
     /// into one of its versions); `None` when not read.
-    pub(crate) added: BTreeMap<ViewId, Option<usize>>,
+    pub(crate) added: BTreeMap<ViewId, Option<Vec<IssueKey>>>,
+    /// Jira cloud's site root, for searches of what a tile counts.
+    pub(crate) jira_cloud: Url,
     /// Open EX items with no scheduled EXA6 release; `None` when not read.
     pub(crate) unscheduled: Option<usize>,
     /// PM status pages by page id.
@@ -557,14 +560,16 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
         .into_iter()
         .chain([(ViewId::ExaSd, phase_names.clone())])
         .map(|(view, versions)| {
-            let count = if versions.is_empty() {
-                Some(0)
+            let keys = if versions.is_empty() {
+                Some(Vec::new())
             } else {
-                take_raw(&mut rows, QueryId::Added(view))
-                    .ok()
-                    .map(|r| r.len())
+                take_raw(&mut rows, QueryId::Added(view)).ok().map(|r| {
+                    r.iter()
+                        .filter_map(|i| str_at(i, "/key")?.parse().ok())
+                        .collect()
+                })
             };
-            (view, count)
+            (view, keys)
         })
         .collect();
 
@@ -634,6 +639,7 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
         scopes,
         sd_closed,
         added,
+        jira_cloud: jira.base(Instance::Cloud).clone(),
         unscheduled,
         pm_pages,
         fixes: fixes.found,

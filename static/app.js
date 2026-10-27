@@ -321,11 +321,15 @@ function kpis(v) {
     const text = `${s.source} ${s.count}`;
     return filterToggle(v, { source: s.source }, text, `${text} ticket${s.count > 1 ? "s" : ""}`);
   };
-  /** A tile's value or note from its pieces; one counting no ticket stays words. */
+  /** A tile's value or note from its pieces: a count of tickets the tables
+   * show filters them, one of tickets they do not show (closed or added)
+   * opens their Jira search, and one counting no ticket stays words. */
   const pieces = (k, parts, text) => (parts?.length
-    ? parts.map((p) => (p.filter && p.keys.length
-      ? filterToggle(v, { tile: k.label, count: p.filter }, p.text, `${p.filter}: ${p.keys.length} ticket${p.keys.length > 1 ? "s" : ""}`)
-      : p.text))
+    ? parts.map((p) => {
+      if (p.url) return link(p.url, p.text);
+      if (!p.filter || !p.keys.length) return p.text;
+      return filterToggle(v, { tile: k.label, count: p.filter }, p.text, `${p.filter}: ${p.keys.length} ticket${p.keys.length > 1 ? "s" : ""}`);
+    })
     : text);
   return v.kpis.map((k) => el("div", { class: "kpi" },
     el("div", { class: "kpi-label" }, k.label),
