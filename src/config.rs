@@ -46,11 +46,14 @@ const VERIFY_STATUSES: [&str; 4] = [
 const AWAITING_VERIFICATION: &str = "awaiting verification";
 /// The label NVDCSE tickets carry while their fix waits for validation.
 const AWAITING_VALIDATION_LABEL: &str = "awaiting_validation";
-/// Release dates Ivan set on 22 Oct 2026, where Jira and the PM pages said
-/// otherwise. Evaluated when compiled, so a wrong date fails the build.
-const AGREED_DATES: [(&str, NaiveDate); 2] = [
+/// Release dates Ivan set where Jira and the PM pages said otherwise: on 22
+/// Oct 2026 for ES6.3.10 and EXA7 GA, on 28 Oct 2026 for the NDU and EXA UI
+/// initiatives. Evaluated when compiled, so a wrong date fails the build.
+const AGREED_DATES: [(&str, NaiveDate); 4] = [
     ("ES6.3.10", date(2027, 1, 27)),
     ("EXA7 GA", date(2027, 3, 31)),
+    ("NDU", date(2027, 3, 31)),
+    ("EXA UI", date(2027, 3, 31)),
 ];
 
 /// A calendar date for a constant; one that does not exist stops the build.
@@ -914,7 +917,9 @@ mod tests {
             Config::default().release_dates,
             BTreeMap::from([
                 ("ES6.3.10".to_string(), date(2027, 1, 27)),
-                ("EXA7 GA".to_string(), date(2027, 3, 31))
+                ("EXA7 GA".to_string(), date(2027, 3, 31)),
+                ("NDU".to_string(), date(2027, 3, 31)),
+                ("EXA UI".to_string(), date(2027, 3, 31))
             ])
         );
         let set = Config::parse(r#"{"release_dates": {"ES6.3.10": "2027-02-01"}}"#).unwrap();

@@ -140,7 +140,8 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   counts every item and its view reads as incomplete data.
 - Verdict: measured against the agreed release date (`release_dates`, by
   release: an EXA6 fixVersion, EXA7 Beta, EXA7 GA, an EXA SD phase or an
-  initiative; ES6.3.10: 27 Jan 2027, EXA7 GA: 31 Mar 2027), else the PM
+  initiative; ES6.3.10: 27 Jan 2027, EXA7 GA, NDU and EXA UI: 31 Mar
+  2027), else the PM
   status page date, else the Jira fixVersion date. Up to `late_tolerance_days` late
   is at risk, later is off track. PM and Jira dates more than `date_gap_days`
   apart are flagged and, unless a date is agreed, turn on track into at

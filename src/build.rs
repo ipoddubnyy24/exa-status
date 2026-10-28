@@ -2319,6 +2319,24 @@ mod tests {
             Some((Some(DateSource::Jira), Some(d(2026, 11, 6)))),
             "a release without one keeps the PM page or Jira date"
         );
+        // A Future work initiative's date is kept under its name.
+        cfg.release_dates
+            .insert("New HA (EAM)".into(), d(2027, 3, 31));
+        let snap = snapshot(
+            &cfg,
+            &raw(),
+            GerritState::Read(&Patches::default()),
+            timing(),
+        )
+        .unwrap();
+        assert_eq!(
+            view(&snap, FUTURE)
+                .initiatives
+                .iter()
+                .find(|c| c.track.name == "New HA (EAM)")
+                .map(|c| (c.track.ref_source, c.track.ref_date)),
+            agreed(2027, 3, 31)
+        );
     }
 
     #[test]
