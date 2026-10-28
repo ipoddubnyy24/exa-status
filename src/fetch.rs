@@ -1576,6 +1576,7 @@ mod tests {
             names,
             [
                 "Whamcloud",
+                "GCP",
                 "DDN",
                 "SFAFE",
                 "NP",
@@ -1606,6 +1607,7 @@ mod tests {
             without,
             [
                 "Whamcloud",
+                "GCP",
                 "DDN",
                 "SFAFE",
                 "NP",
@@ -1619,10 +1621,8 @@ mod tests {
                 .find(|q| q.name == name)
                 .map(|q| q.views.iter().copied().collect::<Vec<_>>())
         };
-        assert_eq!(
-            views("Whamcloud"),
-            Some(vec![ViewId::All, ViewId::Gcp, ViewId::Nvidia])
-        );
+        assert_eq!(views("Whamcloud"), Some(vec![ViewId::All, ViewId::Nvidia]));
+        assert_eq!(views("GCP"), Some(vec![ViewId::All, ViewId::Gcp]));
         assert_eq!(views("EX unscheduled"), Some(vec![ViewId::Exa6]));
         assert_eq!(views("EXA SD added"), Some(vec![ViewId::ExaSd]));
     }

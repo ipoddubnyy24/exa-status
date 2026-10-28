@@ -156,8 +156,9 @@ impl Default for PrioritySeverity {
         Self {
             // Decided on 21 Oct 2026: GCP, NVDCSE and NCP have no severity
             // field, so Blocker and Critical count as S1 and Major as S2. NP,
-            // NCP's copy on Jira cloud, often carries DDN's Severity; an NP
-            // ticket without one is rated the same way.
+            // NCP's copy on Jira cloud, often carries DDN's Severity, and GCP
+            // has it since its move to Jira cloud on 28 Oct 2026; a ticket of
+            // either without one is rated the same way.
             projects: strings(&["GCP", "NVDCSE", "NCP", "NP"]),
             levels: BTreeMap::from([
                 ("Blocker".to_string(), 1),
@@ -454,7 +455,9 @@ impl Default for Config {
             test_pattern: r"(?i)\[test\]|test support case".into(),
             customer_sources: vec![
                 // Whamcloud first, so NCP keeps the row when NP holds a copy.
-                source("Whamcloud", Instance::Whamcloud, &["GCP", "NVDCSE", "NCP"]),
+                source("Whamcloud", Instance::Whamcloud, &["NVDCSE", "NCP"]),
+                // On Jira cloud since 28 Oct 2026, every key renumbered.
+                source("GCP", Instance::Cloud, &["GCP"]),
                 source("DDN", Instance::Cloud, &["DDN"]),
                 source("SFAFE", Instance::Cloud, &["SFAFE"]),
                 source("NP", Instance::Cloud, &["NP"]),
@@ -847,7 +850,18 @@ mod tests {
             "https://localhost:9835/"
         );
         assert_eq!(cfg.host, IpAddr::V4(Ipv4Addr::LOCALHOST));
-        assert_eq!(cfg.customer_sources.len(), 4);
+        assert_eq!(cfg.customer_sources.len(), 5);
+        let gcp: Vec<Instance> = cfg
+            .customer_sources
+            .iter()
+            .filter(|s| s.projects.iter().any(|p| p == "GCP"))
+            .map(|s| s.instance)
+            .collect();
+        assert_eq!(
+            gcp,
+            [Instance::Cloud],
+            "GCP moved to Jira cloud on 28 Oct 2026"
+        );
         assert_eq!(cfg.initiatives.iter().filter(|i| i.in_exa_sd).count(), 1);
     }
 
@@ -944,12 +958,10 @@ mod tests {
 
         assert_eq!(
             cfg.customer_sources.first().map(CustomerSource::jql),
-            Some("project in (GCP, NVDCSE, NCP) AND statusCategory != Done".to_string())
+            Some("project in (NVDCSE, NCP) AND statusCategory != Done".to_string())
         );
-        assert_eq!(
-            views("Whamcloud"),
-            [ViewId::All, ViewId::Gcp, ViewId::Nvidia]
-        );
+        assert_eq!(views("Whamcloud"), [ViewId::All, ViewId::Nvidia]);
+        assert_eq!(views("GCP"), [ViewId::All, ViewId::Gcp]);
         assert_eq!(views("NP"), [ViewId::All, ViewId::Nvidia]);
         assert_eq!(views("DDN"), ViewId::CUSTOMERS);
     }

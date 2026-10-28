@@ -111,7 +111,7 @@ node --test static/
 Defined in `src/rules.rs` and tuned in `config.local.json`:
 
 - Groups: NVIDIA (NVDCSE, NCP, NP, and DDN/SFAFE tickets naming NVIDIA), GCP
-  (GCP on Whamcloud, and DDN/SFAFE tickets naming GCP or Google), all others.
+  (GCP on Jira cloud, and DDN/SFAFE tickets naming GCP or Google), all others.
   Each `customer_sources` entry lists its projects. `[TEST]` tickets are left
   out. A ticket and its copy in a mirror project (`mirror_projects`: NCP and
   NP) are one row, with the more severe rating of the two. The All view shows
@@ -123,11 +123,11 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   and blank elsewhere. When it could not be read, a rule treats it as idle:
   an S1/S2 ticket with unknown idle time puts its view at risk, and customer
   tables show it as "unknown" and sort it as the most idle.
-- S1/S2 idle limits use DDN's Severity field. GCP, NVDCSE and NCP have no
+- S1/S2 idle limits use DDN's Severity field. NVDCSE and NCP have no
   severity field, so their priority stands in (`priority_severity`):
   Blocker and Critical as S1, Major as S2, shown as "S1 (Critical)". NP, NCP's copy on
-  Jira cloud, often carries DDN's Severity; an NP ticket without one is
-  rated the same way.
+  Jira cloud, often carries DDN's Severity, and GCP has it since its move to
+  Jira cloud; a ticket of either without one is rated the same way.
 - Projection: open items weighted by status (`status_weights`) divided by items
   closed per week over `closed_window_days`. An epic in a release counts as
   one item: 12 of the 23 open EXA7 GA epics had no child in a GA version on
