@@ -22,7 +22,7 @@ line; it still updates the caches.
 `serve` refreshes when the snapshot is older than `refresh_minutes` (default
 480, every 8 hours; 0 means by hand only) and on "Refresh now"; a failed refresh is retried
 after one interval. A request for a refresh while one runs (including saving
-a committed date) queues one more. Each refresh runs as a separate
+a committed or agreed release date) queues one more. Each refresh runs as a separate
 `refresh-once` process on the server's own data directory and commitments
 file, stopped after 15 minutes, so the server stays at a few MB. The server
 rereads `refresh_minutes` from the config file every 30 seconds; other config
@@ -87,7 +87,7 @@ Everything the dashboard writes is created readable by the owner only.
 | `data/refresh.lock` | Held by the running refresh |
 | `certs/cert.pem`, `certs/key.pem` | The dashboard's certificate and key |
 | `commitments.json` | Dates promised to NVIDIA and GCP; edited on the page |
-| `config.local.json` | Optional overrides of any key in `src/config.rs`; the page saves the refresh interval here |
+| `config.local.json` | Optional overrides of any key in `src/config.rs`; the page saves the refresh interval and agreed release dates here |
 
 `data/`, `certs/`, `commitments.json` and `config.local.json` are git-ignored.
 
@@ -145,7 +145,11 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   release: an EXA6 fixVersion, EXA7 Beta, EXA7 GA, an EXA SD phase or an
   initiative; ES6.3.10: 27 Jan 2027, EXA7 GA, NDU and EXA UI: 31 Mar
   2027), else the PM
-  status page date, else the Jira fixVersion date. Up to `late_tolerance_days` late
+  status page date, else the Jira fixVersion date. Each release and
+  initiative card sets, changes or clears its agreed date (Release date,
+  Set or Edit); the page saves it in the config file, as an entry that
+  overrides that release's date only (`null` drops a built-in one), and
+  refreshes. Up to `late_tolerance_days` late
   is at risk, later is off track. PM and Jira dates more than `date_gap_days`
   apart are flagged and, unless a date is agreed, turn on track into at
   risk. Releases and initiatives with `small_release_max` or fewer open items

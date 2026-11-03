@@ -1,7 +1,8 @@
 //! Built-in defaults, overridable by `config.local.json` in the working
 //! directory (or the file named by `EXA_STATUS_CONFIG`). Only top-level keys
-//! that change need to appear there, and a `status_weights` entry overrides
-//! just that status. Unknown keys are rejected so a typo fails loudly, and
+//! that change need to appear there, a `status_weights` entry overrides just
+//! that status, and a `release_dates` entry just that release (`null` drops
+//! its date). Unknown keys are rejected so a typo fails loudly, and
 //! every value is checked at load, before any network I/O.
 
 use anyhow::{Context, Result, bail, ensure};
@@ -27,6 +28,8 @@ pub(crate) const REFRESH_CHOICES: [u64; 5] = [0, 15, 30, 60, EVERY_8_HOURS];
 const EVERY_8_HOURS: u64 = 8 * 60;
 /// Key of the refresh interval in the config file.
 pub(crate) const REFRESH_KEY: &str = "refresh_minutes";
+/// Key of the agreed release dates in the config file.
+const RELEASE_DATES_KEY: &str = "release_dates";
 /// EXA Reporter's address when the config does not name one.
 const DEFAULT_REPORTER_URL: &str = "https://localhost:9835/";
 /// Remaining-work weights: nothing done yet, under way, in review, being verified.
@@ -306,7 +309,9 @@ pub(crate) struct Config {
     /// Release dates agreed outside Jira and the PM pages, by release: an
     /// EXA6 fixVersion ("ES6.3.10"), "EXA7 Beta", "EXA7 GA", an EXA SD phase or
     /// a Future work initiative. Its verdict is measured against this date
-    /// before the PM page's and Jira's.
+    /// before the PM page's and Jira's. Entries in the config file override
+    /// the agreed date of that release only; `null` drops it.
+    #[serde(deserialize_with = "dates_over_defaults")]
     pub(crate) release_dates: BTreeMap<String, NaiveDate>,
     /// EXA SD's Jira project.
     pub(crate) exa_sd_project: String,
@@ -407,6 +412,28 @@ fn weights_over_defaults<'de, D: Deserializer<'de>>(
     Ok(weights)
 }
 
+/// The release dates agreed outside Jira, by release.
+fn agreed_dates() -> BTreeMap<String, NaiveDate> {
+    AGREED_DATES
+        .iter()
+        .map(|(name, date)| ((*name).to_string(), *date))
+        .collect()
+}
+
+/// The configured release dates laid over the agreed ones; `null` drops one.
+fn dates_over_defaults<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<BTreeMap<String, NaiveDate>, D::Error> {
+    let mut dates = agreed_dates();
+    for (name, date) in BTreeMap::<String, Option<NaiveDate>>::deserialize(d)? {
+        match date {
+            Some(date) => dates.insert(name, date),
+            None => dates.remove(&name),
+        };
+    }
+    Ok(dates)
+}
+
 impl Default for Config {
     fn default() -> Self {
         let home = home();
@@ -487,10 +514,7 @@ impl Default for Config {
             exa7_ga_versions: strings(&["ES7.0.0", "ES7.1.0"]),
             // "EX 6.3.10 scope", Manish Agrawal's filter, chosen on 22 Oct 2026.
             scope_filters: BTreeMap::from([("ES6.3.10".into(), 49208)]),
-            release_dates: AGREED_DATES
-                .iter()
-                .map(|(name, date)| ((*name).to_string(), *date))
-                .collect(),
+            release_dates: agreed_dates(),
             exa_sd_project: "EXM".into(),
             exa_sd_phase_prefix: "NVMesh-P".into(),
             exa_sd_pm_phase: "NVMesh-P2".into(),
@@ -785,6 +809,46 @@ pub(crate) fn with_refresh_minutes(existing: Option<&str>, minutes: u64) -> Resu
         REFRESH_CHOICES.contains(&minutes),
         "{REFRESH_KEY} must be one of {REFRESH_CHOICES:?}, not {minutes}"
     );
+    edited(existing, |object| {
+        object.insert(REFRESH_KEY.into(), Value::from(minutes));
+        Ok(())
+    })
+}
+
+/// The config file text with the agreed date of release `name` set, or
+/// dropped with `None`, and every other key kept in place; `existing` as for
+/// [`with_refresh_minutes`].
+pub(crate) fn with_release_date(
+    existing: Option<&str>,
+    name: &str,
+    date: Option<NaiveDate>,
+) -> Result<String> {
+    edited(existing, |object| {
+        let Value::Object(dates) = object
+            .entry(RELEASE_DATES_KEY)
+            .or_insert_with(|| Value::Object(Map::new()))
+        else {
+            bail!("{RELEASE_DATES_KEY} in the config file is not a JSON object");
+        };
+        match date {
+            Some(date) => dates.insert(name.into(), Value::from(date.to_string())),
+            // A built-in date stays dropped only as `null`.
+            None if AGREED_DATES.iter().any(|(agreed, _)| *agreed == name) => {
+                dates.insert(name.into(), Value::Null)
+            }
+            None => dates.remove(name),
+        };
+        Ok(())
+    })
+}
+
+/// The config file text `existing` (no file: an empty object) with `change`
+/// made, checked to load. Fails rather than replace a file that is not a
+/// valid config.
+fn edited(
+    existing: Option<&str>,
+    change: impl FnOnce(&mut Map<String, Value>) -> Result<()>,
+) -> Result<String> {
     let mut object = match existing {
         None => Map::new(),
         Some(text) => match serde_json::from_str::<Value>(text)
@@ -794,7 +858,7 @@ pub(crate) fn with_refresh_minutes(existing: Option<&str>, minutes: u64) -> Resu
             _ => bail!("the config file is not a JSON object"),
         },
     };
-    object.insert(REFRESH_KEY.into(), Value::from(minutes));
+    change(&mut object)?;
     let text = serde_json::to_string_pretty(&Value::Object(object))?;
     Config::parse(&text).context("the updated config would not load")?;
     Ok(text + "\n")
@@ -958,12 +1022,53 @@ mod tests {
                 ("EXA UI".to_string(), date(2027, 3, 31))
             ])
         );
-        let set = Config::parse(r#"{"release_dates": {"ES6.3.10": "2027-02-01"}}"#).unwrap();
+        let set = Config::parse(
+            r#"{"release_dates": {"ES6.3.10": "2027-02-01", "EXA7 Beta": "2026-12-01", "NDU": null}}"#,
+        )
+        .unwrap();
         assert_eq!(
             set.release_dates,
-            BTreeMap::from([("ES6.3.10".to_string(), date(2027, 2, 1))])
+            BTreeMap::from([
+                ("ES6.3.10".to_string(), date(2027, 2, 1)),
+                ("EXA7 Beta".to_string(), date(2026, 12, 1)),
+                ("EXA7 GA".to_string(), date(2027, 3, 31)),
+                ("EXA UI".to_string(), date(2027, 3, 31))
+            ]),
+            "each entry changes its release only, and null drops the built-in date"
         );
         assert!(Config::parse(r#"{"release_dates": {"ES6.3.10": "27 Jan 2027"}}"#).is_err());
+    }
+
+    #[test]
+    fn a_release_date_is_saved_dropped_and_removed_with_other_keys_kept() {
+        let date = |y, m, d| NaiveDate::from_ymd_opt(y, m, d);
+        let saved = |text: &str| Config::parse(text).unwrap().release_dates;
+
+        let set =
+            with_release_date(Some(r#"{"port": 9999}"#), "EXA7 Beta", date(2026, 12, 1)).unwrap();
+        assert_eq!(
+            set,
+            "{\n  \"port\": 9999,\n  \"release_dates\": {\n    \"EXA7 Beta\": \"2026-12-01\"\n  }\n}\n"
+        );
+        assert_eq!(saved(&set).get("EXA7 Beta").copied(), date(2026, 12, 1));
+
+        let dropped = with_release_date(Some(&set), "NDU", None).unwrap();
+        assert!(dropped.contains("\"NDU\": null"), "{dropped}");
+        assert_eq!(saved(&dropped).get("NDU"), None);
+
+        let removed = with_release_date(Some(&dropped), "EXA7 Beta", None).unwrap();
+        assert!(!removed.contains("EXA7 Beta"), "{removed}");
+        assert_eq!(saved(&removed).len(), AGREED_DATES.len() - 1);
+    }
+
+    #[test_case(Some("not json"), "the config file is not valid JSON" ; "corrupt file is kept")]
+    #[test_case(Some(r#"{"release_dates": []}"#), "release_dates in the config file is not a JSON object" ; "list is kept")]
+    #[test_case(Some(r#"{"host": "0.0.0.0"}"#), "the updated config would not load" ; "invalid file is kept")]
+    fn setting_a_release_date_refuses_to_clobber(existing: Option<&str>, message: &str) {
+        let err = with_release_date(existing, "EXA7 Beta", NaiveDate::from_ymd_opt(2026, 12, 1))
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), message);
     }
 
     #[test]

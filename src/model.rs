@@ -11,7 +11,7 @@ use url::Url;
 /// Version of the snapshot layout. The server serves a snapshot only when it
 /// matches, so a server built before a layout change never feeds its embedded
 /// page a snapshot written by a newer worker.
-pub(crate) const SNAPSHOT_FORMAT: u32 = 15;
+pub(crate) const SNAPSHOT_FORMAT: u32 = 16;
 
 /// A view (sub-tab). Notes name the views they concern, and the UI keeps the
 /// selected one across refreshes by its id.
@@ -619,6 +619,9 @@ pub(crate) struct Track {
     pub(crate) ref_date: Option<NaiveDate>,
     /// Where `ref_date` came from.
     pub(crate) ref_source: Option<DateSource>,
+    /// The name its agreed date is kept under (`release_dates`), which the
+    /// page saves a new one under.
+    pub(crate) date_name: String,
     /// Days between the PM page and Jira dates.
     pub(crate) gap_days: Option<i64>,
     /// The gap is over `date_gap_days` and is called out.

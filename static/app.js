@@ -366,6 +366,66 @@ function dateCell(label, date, note, url) {
     note ? el("div", { class: "kpi-note" }, note) : null);
 }
 
+/** A card's agreed release date, which the verdict goes by before the PM
+ * page's and Jira's, with what sets, changes or clears it. */
+function agreedCell(t) {
+  const label = el("div", { class: "kpi-label" }, "Release date");
+  if (ui.editing && ui.editing.track === t.date_name) return el("div", {}, label, releaseDateEditor(t));
+  const agreed = t.ref_source === "agreed";
+  const uses = { pm_page: "the verdict uses the PM page date", jira: "the verdict uses the Jira date" }[t.ref_source] || "no date to judge by";
+  return el("div", {}, label,
+    el("div", { class: "date-value" }, agreed ? fmtDate(t.ref_date) : "not agreed", " ",
+      el("button", { type: "button", class: "link-button", onclick: () => openReleaseEditor(t) }, agreed ? "Edit" : "Set")),
+    el("div", { class: "kpi-note" }, agreed ? "agreed; the verdict uses it" : uses));
+}
+
+function releaseDateEditor(t) {
+  const draft = ui.editing;
+  const date = el("input", { type: "date", value: draft.date, "aria-label": `Agreed date for ${t.date_name}`, oninput: (e) => { draft.date = e.target.value; } });
+  const save = () => {
+    if (!draft.date) { say("Pick a date, or use Clear"); return; }
+    saveReleaseDate(t.date_name, draft.date);
+  };
+  return el("span", { class: "editor" }, date,
+    el("button", { type: "button", onclick: save }, "Save"),
+    t.ref_source === "agreed" ? el("button", { type: "button", onclick: () => saveReleaseDate(t.date_name, null) }, "Clear") : null,
+    el("button", { type: "button", onclick: closeEditor }, "Cancel"));
+}
+
+function openReleaseEditor(t) {
+  ui.editing = { track: t.date_name, date: t.ref_source === "agreed" ? t.ref_date : "" };
+  render();
+}
+
+/** Shows an agreed date on the cards kept under `name` before the refresh judges by it. */
+function applyReleaseDate(name, date) {
+  if (!ui.snap) return;
+  for (const tab of ui.snap.tabs) {
+    for (const v of tab.views) {
+      for (const t of [...v.tracks, ...v.initiatives.map((c) => c.track)]) {
+        if (t.date_name !== name) continue;
+        // Without an agreed date the verdict goes by the PM page's, else Jira's.
+        [t.ref_date, t.ref_source] = date ? [date, "agreed"]
+          : t.pm_date ? [t.pm_date, "pm_page"]
+          : t.jira_date ? [t.jira_date, "jira"] : [null, null];
+      }
+    }
+  }
+}
+
+async function saveReleaseDate(name, date) {
+  const r = await postJson("/api/release-dates", { name, date });
+  if (r.ok) {
+    applyReleaseDate(name, r.data.date ?? null);
+    const when = r.data.refresh === "queued" ? "Verdicts update after the next refresh." : "Refreshing verdicts.";
+    say(date ? `Saved the ${name} release date: ${fmtDate(date)}. ${when}` : `Cleared the ${name} release date. ${when}`);
+    closeEditor();
+    loadStatus();
+  } else {
+    say(r.data.error || `Not saved (${name})`);
+  }
+}
+
 /** A release's or initiative's card; `name` replaces its plain name, and
  * `selected` marks the release the view is limited to. */
 function trackCard(t, extra, name = null, selected = false) {
@@ -379,7 +439,7 @@ function trackCard(t, extra, name = null, selected = false) {
       el("span", { class: "muted" }, `${t.open} open, ${t.weighted} weighted`),
       chip(t.verdict)),
     el("div", { class: "dates" },
-      t.ref_source === "agreed" ? dateCell("Release date", t.ref_date, "agreed; the verdict uses it") : null,
+      agreedCell(t),
       dateCell("PM status page", t.pm_date, pmNote, t.pm ? t.pm.url : null),
       dateCell("Jira", t.jira_date, t.start_date ? `starts ${fmtDate(t.start_date)}` : ""),
       dateCell("Projected at current rate", t.projected, projNote)),

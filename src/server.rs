@@ -1,5 +1,5 @@
 //! HTTPS server. Serves the dashboard and the latest snapshot, accepts edits
-//! of committed dates and of the refresh interval, and runs each refresh in a
+//! of committed dates, agreed release dates and the refresh interval, and runs each refresh in a
 //! short-lived worker process so the server itself stays small.
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -53,6 +53,9 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const CLIENT_HEADER: &str = "x-exa-status";
 /// Longest note kept with a committed date: a sentence or two; more belongs in Jira.
 const MAX_NOTE_CHARS: usize = 500;
+/// Longest release or initiative name a date is saved under; fixVersion and
+/// initiative names are a few words.
+const MAX_NAME_CHARS: usize = 100;
 /// Only the dashboard's own files may load; nothing may frame it.
 const CSP: &str = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
@@ -223,6 +226,15 @@ struct CommitmentBody {
     note: Option<String>,
 }
 
+/// An agreed release date to set, or to clear with `date: null`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseDateBody {
+    /// The name the date is kept under, as the snapshot's `date_name` gives it.
+    name: String,
+    date: Option<NaiveDate>,
+}
+
 /// Just the layout version of a snapshot file.
 #[derive(Deserialize)]
 struct SnapshotHead {
@@ -293,6 +305,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         .route("/api/refresh", post(refresh))
         .route("/api/settings", get(get_settings).post(set_settings))
         .route("/api/commitments", post(set_commitment))
+        .route("/api/release-dates", post(set_release_date))
         .layer(middleware::from_fn_with_state(Arc::clone(&state), guard))
         .with_state(state)
 }
@@ -454,37 +467,82 @@ async fn set_settings(
         );
     }
     let _writing = state.file_writes.lock().await;
-    let path = state.config_path.clone();
-    let existing = match blocking(move || store::read_optional(&path)).await {
-        Ok(text) => text,
-        Err(e) => {
-            error!("{e:#}");
-            return problem(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "the config file could not be read",
-            );
-        }
-    };
-    let text = match config::with_refresh_minutes(existing.as_deref(), minutes) {
-        Ok(text) => text,
-        Err(e) => {
-            warn!("not updating {}: {e:#}", state.config_path.display());
-            return problem(
-                StatusCode::CONFLICT,
-                "the config file is not valid; fix it by hand first",
-            );
-        }
-    };
-    let path = state.config_path.clone();
-    if let Err(e) = blocking(move || store::write_atomic(&path, text.as_bytes())).await {
-        error!("{e:#}");
-        return problem(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "the config file could not be written",
-        );
+    if let Err(response) = rewrite_config(&state, |existing| {
+        config::with_refresh_minutes(existing, minutes)
+    })
+    .await
+    {
+        return response;
     }
     state.refresh_minutes.store(minutes, Ordering::Relaxed);
     Json(json!({ "refresh_minutes": minutes })).into_response()
+}
+
+async fn set_release_date(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ReleaseDateBody>,
+) -> Response {
+    let name = body.name.trim();
+    if name.is_empty()
+        || name.chars().count() > MAX_NAME_CHARS
+        || name.chars().any(char::is_control)
+    {
+        return problem(
+            StatusCode::BAD_REQUEST,
+            &format!("a release name of 1 to {MAX_NAME_CHARS} characters is needed"),
+        );
+    }
+    let _writing = state.file_writes.lock().await;
+    if let Err(response) = rewrite_config(&state, |existing| {
+        config::with_release_date(existing, name, body.date)
+    })
+    .await
+    {
+        return response;
+    }
+    Json(json!({
+        "saved": true,
+        "name": name,
+        "date": body.date,
+        "refresh": start_refresh(&state),
+    }))
+    .into_response()
+}
+
+/// Replaces the config file with what `change` makes of its text (`None`
+/// when there is none); a file `change` refuses is left as it is. The caller
+/// holds `file_writes`.
+async fn rewrite_config(
+    state: &AppState,
+    change: impl FnOnce(Option<&str>) -> Result<String>,
+) -> Result<(), Response> {
+    let path = state.config_path.clone();
+    let existing = blocking(move || store::read_optional(&path))
+        .await
+        .map_err(|e| {
+            error!("{e:#}");
+            problem(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the config file could not be read",
+            )
+        })?;
+    let text = change(existing.as_deref()).map_err(|e| {
+        warn!("not updating {}: {e:#}", state.config_path.display());
+        problem(
+            StatusCode::CONFLICT,
+            "the config file is not valid; fix it by hand first",
+        )
+    })?;
+    let path = state.config_path.clone();
+    blocking(move || store::write_atomic(&path, text.as_bytes()))
+        .await
+        .map_err(|e| {
+            error!("{e:#}");
+            problem(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the config file could not be written",
+            )
+        })
 }
 
 async fn set_commitment(
@@ -1038,6 +1096,60 @@ mod tests {
         assert_eq!(
             now,
             json!({"refresh_minutes": 15, "choices": [0, 15, 30, 60, 480], "max_note_chars": MAX_NOTE_CHARS})
+        );
+    }
+
+    #[tokio::test]
+    async fn release_dates_are_validated_saved_and_cleared_with_other_keys_kept() {
+        let f = fixture();
+        let path = f.dir.path().join("config.local.json");
+        std::fs::write(&path, r#"{"port": 9999}"#).unwrap();
+        let set = |body: &str| {
+            request(
+                Method::POST,
+                "/api/release-dates",
+                HOST,
+                &FROM_PAGE,
+                Some(body),
+            )
+        };
+
+        assert_eq!(
+            send(&f.app, set(r#"{"name": " ", "date": "2026-12-01"}"#))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(
+                &f.app,
+                set(r#"{"name": "EXA7 Beta", "date": "1 Dec 2026"}"#)
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+
+        let (code, body) = send_json(
+            &f.app,
+            set(r#"{"name": "EXA7 Beta", "date": "2026-12-01"}"#),
+        )
+        .await;
+        assert_eq!(
+            (code, &body["saved"], &body["date"]),
+            (StatusCode::OK, &json!(true), &json!("2026-12-01"))
+        );
+        let (code, body) = send_json(&f.app, set(r#"{"name": "NDU", "date": null}"#)).await;
+        assert_eq!((code, &body["date"]), (StatusCode::OK, &Value::Null));
+
+        let saved = Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            (
+                saved.port,
+                saved.release_dates.get("EXA7 Beta").copied(),
+                saved.release_dates.get("NDU")
+            ),
+            (9999, NaiveDate::from_ymd_opt(2026, 12, 1), None)
         );
     }
 

@@ -973,6 +973,7 @@ impl<'a> Context<'a> {
                 jira_date,
                 start_date,
                 agreed_date: self.cfg.release_dates.get(spec.date_key).copied(),
+                date_name: spec.date_key.into(),
             },
         );
         if !missing.is_empty() {
@@ -1429,6 +1430,7 @@ impl<'a> Context<'a> {
                 jira_date,
                 start_date: None,
                 agreed_date: self.cfg.release_dates.get(&data.config.name).copied(),
+                date_name: data.config.name.clone(),
             },
         );
         let card = InitiativeCard {
@@ -2385,6 +2387,22 @@ mod tests {
             Some((Some(DateSource::Jira), Some(d(2026, 11, 6)))),
             "a release without one keeps the PM page or Jira date"
         );
+        let date_name = |id: ViewId, name: &str| {
+            view(&snap, id)
+                .tracks
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| t.date_name.as_str())
+        };
+        assert_eq!(
+            [
+                date_name(EXA6, "ES6.3.9_C1"),
+                date_name(EXA7_BETA, "ES7.0.0_Beta"),
+                date_name(EXA7_GA, "EXA7 GA (ES7.0.0 + ES7.1.0)")
+            ],
+            [Some("ES6.3.9_C1"), Some("EXA7 Beta"), Some("EXA7 GA")],
+            "the page saves a date under the name the verdict reads it by"
+        );
         // A Future work initiative's date is kept under its name.
         cfg.release_dates
             .insert("New HA (EAM)".into(), d(2027, 3, 31));
@@ -2402,6 +2420,12 @@ mod tests {
                 .find(|c| c.track.name == "New HA (EAM)")
                 .map(|c| (c.track.ref_source, c.track.ref_date)),
             agreed(2027, 3, 31)
+        );
+        assert!(
+            view(&snap, FUTURE)
+                .initiatives
+                .iter()
+                .all(|c| c.track.date_name == c.track.name)
         );
     }
 

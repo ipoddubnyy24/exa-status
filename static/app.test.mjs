@@ -253,6 +253,7 @@ class FakeServer {
     }
     const body = JSON.parse(init.body);
     this.posted.push({ url, body });
+    if (url === "/api/release-dates") return reply({ saved: true, name: body.name, date: body.date, refresh: "started" });
     if (url !== "/api/commitments") return reply(undefined);
     // The entry as the server stores it: the note trimmed, none when empty.
     const committed = body.date ? { date: body.date, note: body.note?.trim() || null, key: body.key } : null;
@@ -1043,6 +1044,7 @@ const track = (name, fields) => ({
   start_date: null,
   ref_date: "2027-01-18",
   ref_source: "pm_page",
+  date_name: name,
   gap_flagged: true,
   verdict: "at_risk",
   reason: "",
@@ -1050,7 +1052,7 @@ const track = (name, fields) => ({
   ...fields,
 });
 
-test("a release card shows the agreed release date first, when the verdict uses one", async () => {
+test("a release card shows the agreed release date first, or that none is agreed", async () => {
   const snap = sampleSnapshot();
   exa7Of(snap).tracks = [track("ES6.3.10", { ref_date: "2027-01-27", ref_source: "agreed" }), track("ES6.3.9_C1")];
   const page = await openPage(new FakeServer(snap));
@@ -1058,12 +1060,72 @@ test("a release card shows the agreed release date first, when the verdict uses 
 
   const cards = page.document.querySelectorAll("#view .track").map((card) =>
     card.querySelectorAll(".kpi-label").map((label) => label.textContent));
+  const dates = page.document.querySelectorAll("#view .track .dates").map((d) => d.textContent);
 
   assert.deepEqual(cards, [
     ["Release date", "PM status page", "Jira", "Projected at current rate"],
-    ["PM status page", "Jira", "Projected at current rate"],
+    ["Release date", "PM status page", "Jira", "Projected at current rate"],
   ]);
-  assert.match(page.document.querySelector("#view .track .dates").textContent, /^Release date27 Jan 2027agreed; the verdict uses it/);
+  assert.match(dates[0], /^Release date27 Jan 2027 Editagreed; the verdict uses itPM status page/);
+  assert.match(dates[1], /^Release datenot agreed Setthe verdict uses the PM page datePM status page/);
+});
+
+/** The text of the first release card's dates. */
+const cardDates = (page) => page.document.querySelector("#view .track .dates").textContent;
+
+test("a release date set on a card is saved under the name the verdict reads it by, and shown at once", async () => {
+  const snap = sampleSnapshot();
+  exa7Of(snap).tracks = [track("EXA7 GA (ES7.0.0 + ES7.1.0)", { date_name: "EXA7 GA" })];
+  const page = await openPage(new FakeServer(snap));
+  await press(page, "Development");
+
+  await press(page, "Set");
+  const date = page.document.querySelector('#view .track input[type="date"]');
+  assert.equal(date.value, "", "nothing agreed yet");
+  assert.equal(page.document.querySelectorAll("button").filter((b) => nameOf(b) === "Clear").length, 0, "nothing to clear");
+  date.value = "2027-03-31";
+  date.dispatch("input");
+  await press(page, "Save");
+
+  assert.deepEqual(page.server.posted, [{ url: "/api/release-dates", body: { name: "EXA7 GA", date: "2027-03-31" } }]);
+  assert.match(cardDates(page), /^Release date31 Mar 2027 Editagreed; the verdict uses it/);
+  assert.equal(flash(page), "Saved the EXA7 GA release date: 31 Mar 2027. Refreshing verdicts.");
+});
+
+test("Cancel leaves an agreed date as it was; Clear goes back to the PM page date", async () => {
+  const snap = sampleSnapshot();
+  exa7Of(snap).tracks = [track("ES6.3.10", { ref_date: "2027-01-27", ref_source: "agreed" })];
+  const page = await openPage(new FakeServer(snap));
+  await press(page, "Development");
+
+  await press(page, "Edit");
+  assert.equal(page.document.querySelector('#view .track input[type="date"]').value, "2027-01-27");
+  await press(page, "Cancel");
+  assert.deepEqual(page.server.posted, []);
+  assert.match(cardDates(page), /^Release date27 Jan 2027 Edit/);
+
+  await press(page, "Edit");
+  await press(page, "Clear");
+
+  assert.deepEqual(page.server.posted, [{ url: "/api/release-dates", body: { name: "ES6.3.10", date: null } }]);
+  assert.match(cardDates(page), /^Release datenot agreed Setthe verdict uses the PM page date/);
+  assert.equal(flash(page), "Cleared the ES6.3.10 release date. Refreshing verdicts.");
+});
+
+test("an initiative card sets its release date under the initiative's name", async () => {
+  const snap = sampleSnapshot();
+  const initiatives = [{ track: track("NDU"), epics: [], blockers: [] }];
+  snap.tabs.push({ id: "future", label: "Future work", verdict: "on_track", views: [view("future", "initiatives", { initiatives })] });
+  const page = await openPage(new FakeServer(snap));
+  await press(page, "Future work");
+
+  await press(page, "Set");
+  const date = page.document.querySelector('#view .track input[type="date"]');
+  date.value = "2027-03-31";
+  date.dispatch("input");
+  await press(page, "Save");
+
+  assert.deepEqual(page.server.posted, [{ url: "/api/release-dates", body: { name: "NDU", date: "2027-03-31" } }]);
 });
 
 test("patches that decide a ticket's delivery stand in for its linked fix and its date", async () => {
@@ -1330,7 +1392,7 @@ test("a view with one release offers no release to limit it to", async () => {
   const page = await openPage(new FakeServer(snap));
   await press(page, "Development");
 
-  assert.equal(page.document.querySelectorAll("#view .track button").length, 0);
+  assert.equal(page.document.querySelectorAll("#view .track-head button").length, 0);
 });
 
 test("the refresh interval offers every 8 hours, and shows the one in use", async () => {

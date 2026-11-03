@@ -1,4 +1,4 @@
-format 15
+format 16
 .duration_secs
 .format
 .generated_at
@@ -71,6 +71,7 @@ format 15
 .tabs[].views[].initiatives[].epics[].url
 .tabs[].views[].initiatives[].track
 .tabs[].views[].initiatives[].track.closed_per_week
+.tabs[].views[].initiatives[].track.date_name
 .tabs[].views[].initiatives[].track.gap_days
 .tabs[].views[].initiatives[].track.gap_flagged
 .tabs[].views[].initiatives[].track.jira_date
@@ -211,6 +212,7 @@ format 15
 .tabs[].views[].tests[].verification
 .tabs[].views[].tracks
 .tabs[].views[].tracks[].closed_per_week
+.tabs[].views[].tracks[].date_name
 .tabs[].views[].tracks[].gap_days
 .tabs[].views[].tracks[].gap_flagged
 .tabs[].views[].tracks[].jira_date

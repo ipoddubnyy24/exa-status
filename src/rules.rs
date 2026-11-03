@@ -367,6 +367,8 @@ pub(crate) struct TrackInput<'a> {
     pub(crate) start_date: Option<NaiveDate>,
     /// The release date agreed outside Jira and the PM page (`release_dates`).
     pub(crate) agreed_date: Option<NaiveDate>,
+    /// The name `release_dates` keeps that date under.
+    pub(crate) date_name: String,
 }
 
 /// Remaining-work weight of an open item: its changes' where they decide its
@@ -523,6 +525,7 @@ pub(crate) fn evaluate_track(cfg: &Config, today: NaiveDate, input: TrackInput<'
         start_date: input.start_date,
         ref_date,
         ref_source,
+        date_name: input.date_name,
         gap_days,
         gap_flagged,
         verdict,
@@ -1090,6 +1093,7 @@ pub(crate) mod tests {
             jira_date: jira,
             start_date: None,
             agreed_date: None,
+            date_name: "R".into(),
         }
     }
 
