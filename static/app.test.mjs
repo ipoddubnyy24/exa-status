@@ -1098,27 +1098,47 @@ test("patches that decide a ticket's delivery stand in for its linked fix and it
   assert.deepEqual(rows(page), ["NCP-9", "NCP-163", "NVDCSE-248", "NVDCSE-250", "NVDCSE-216", "DDN-7162"]);
 });
 
-test("a complete ticket reads as complete: in the table, in its date group and among the blockers", async () => {
+test("a done ticket reads as done in the table, its date group and the blockers; one waiting for its tag does not", async () => {
   const snap = sampleSnapshot();
   const nvidia = nvidiaOf(snap);
-  const merged = { branches: [{ branch: "b_es6_0", merged: true, tag: null }], merged: true, release: null, date: null };
-  Object.assign(nvidia.items.find((t) => t.key === "NCP-9"), { status: "Open", fix_state: "delivered", delivery: merged });
+  const done = { branches: [{ branch: "b_es6_0", emf: false, merged: true, tag: "2.14.0-ddn264" }], merged: true, done: true, release: null, date: null };
+  const waiting = { branches: [{ branch: "b_es6_0", emf: false, merged: true, tag: null }], merged: true, done: false, release: "ES6.3.10", date: "2027-01-27" };
+  Object.assign(nvidia.items.find((t) => t.key === "NCP-9"), { status: "Open", fix_state: "delivered", delivery: done });
   // Its fix awaits verification too: both pills show.
-  Object.assign(nvidia.items.find((t) => t.key === "NVDCSE-248"), { verification: "awaiting_validation", fix_state: "delivered", delivery: merged });
-  nvidia.date_groups.find((g) => g.date === "2026-11-01").complete = 1;
-  nvidia.blockers = [{ ...blockerOf("NCP-9", "Committed date passed"), complete: true }];
+  Object.assign(nvidia.items.find((t) => t.key === "NVDCSE-248"), { verification: "awaiting_validation", fix_state: "delivered", delivery: done });
+  Object.assign(nvidia.items.find((t) => t.key === "NVDCSE-250"), { fix: null, fix_state: "under_way", delivery: waiting });
+  nvidia.date_groups.find((g) => g.date === "2026-11-01").done = 1;
+  nvidia.blockers = [{ ...blockerOf("NCP-9", "Committed date passed"), done: true }];
   const page = await openPage(new FakeServer(snap));
   const group = page.document.querySelectorAll("#view .group").find((g) => g.textContent.startsWith("1 Nov 2026"));
 
   assert.deepEqual(
-    ["NCP-9", "NVDCSE-248"].map((key) => [rowOf(page, key).getAttribute("class"), cell(page, key, "Status").textContent, cell(page, key, "Fix").textContent]),
+    ["NCP-9", "NVDCSE-248", "NVDCSE-250"].map((key) => [rowOf(page, key).getAttribute("class"), cell(page, key, "Status").textContent, cell(page, key, "Fix").textContent]),
     [
-      ["complete", "Open Complete", "es6 merged (next tag)"],
-      ["awaiting complete", "Open awaiting_validation Complete", "es6 merged (next tag)"],
+      ["done", "Open Done", "es6 ddn264"],
+      ["awaiting done", "Open awaiting_validation Done", "es6 ddn264"],
+      [null, "In Progress", "es6 merged (next tag), for ES6.3.10"],
     ],
   );
-  assert.match(group.textContent, /, 1 complete\. 2 not started or idle/);
-  assert.deepEqual(blockerChips(page), { "NCP-9": ["Committed date passed", "Complete"] });
+  assert.match(group.textContent, /, 1 done\. 2 not started or idle/);
+  assert.deepEqual(blockerChips(page), { "NCP-9": ["Committed date passed", "Done"] });
+});
+
+test("EMF pull requests show beside the Lustre patches, and in the Fix column where they decide", async () => {
+  const snap = sampleSnapshot();
+  const pr = (number, branch, state) => ({ number, url: `https://github.example/pull/${number}`, branch, state });
+  Object.assign(nvidiaOf(snap).items.find((t) => t.key === "DDN-7162"), {
+    prs: [pr(6062, "release/EXA7_beta", "merged"), pr(6011, "master", "open"), pr(5900, "master", "closed")],
+    delivery: { branches: [{ branch: "release/EXA7_beta", emf: true, merged: true, tag: null }], merged: true, done: true, release: null, date: null },
+  });
+  const page = await openPage(new FakeServer(snap));
+
+  assert.deepEqual(
+    cell(page, "DDN-7162", "Patches").querySelectorAll("a").map((a) => [a.textContent, a.getAttribute("href")]),
+    [["EMF release/EXA7_beta merged", "https://github.example/pull/6062"], ["EMF master review", "https://github.example/pull/6011"]],
+  );
+  assert.equal(cell(page, "DDN-7162", "Fix").textContent, "EMF release/EXA7_beta merged");
+  assert.equal(cell(page, "DDN-7162", "Status").textContent, "In Progress Done");
 });
 
 /** Words on a tile, and a count on it of the tickets `keys`, which the table's filter calls `filter`. */

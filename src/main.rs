@@ -13,6 +13,7 @@ mod config;
 mod confluence;
 mod fetch;
 mod gerrit;
+mod github;
 mod http;
 mod jira;
 mod model;

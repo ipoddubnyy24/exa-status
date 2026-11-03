@@ -6,14 +6,14 @@ use chrono::{DateTime, Local, NaiveDate};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use url::Url;
 
-use crate::config::{Config, TagFamily};
+use crate::config::{CUSTOMERS_EMF_KEY, Config, TagFamily};
 use crate::confluence::PmPage;
 use crate::fetch::{self, InitiativeData, KeysByVersion, Patches, RawData, Watched};
 use crate::jira::Version;
 use crate::model::{
     BuildHealth, Category, Committed, Delivery, EpicRef, FixRef, FixState, InitiativeCard,
-    IssueKey, Kpi, SNAPSHOT_FORMAT, Severity, Snapshot, SourceCount, SourceStatus, Tab, Ticket,
-    TilePart, Tone, Track, Verdict, View, ViewId, ViewKind,
+    IssueKey, Kpi, PullRef, SNAPSHOT_FORMAT, Severity, Snapshot, SourceCount, SourceStatus, Tab,
+    Ticket, TilePart, Tone, Track, Verdict, View, ViewId, ViewKind,
 };
 use crate::rules::{self, BLOCKER, Bucket, CRITICAL, Classifier, TrackInput};
 
@@ -54,10 +54,17 @@ pub(crate) fn snapshot(
         GerritState::Read(p) => (!p.errors.is_empty()).then(|| p.errors.join("; ")),
         GerritState::Failed(e) => Some(e.to_string()),
     };
+    let mut pulls: HashMap<&IssueKey, Vec<&PullRef>> = HashMap::new();
+    for p in &raw.pulls {
+        for key in &p.keys {
+            pulls.entry(key).or_default().push(&p.pr);
+        }
+    }
     let ctx = Context {
         cfg,
         raw,
         patches,
+        pulls,
         patch_gap: gerrit_error.clone(),
         releases: ReleaseDates::new(),
         today: raw.today,
@@ -144,24 +151,31 @@ pub(crate) fn watch_list(cfg: &Config, snap: &Snapshot) -> Vec<Watched> {
         if !seen.insert(t.key.clone()) {
             continue;
         }
-        let mut search = vec![t.key.clone()];
-        search.extend(t.also.iter().cloned());
-        search.extend(
-            t.links
-                .iter()
-                .filter(|l| customers && cfg.is_fix_relation(&l.relation))
-                .map(|l| &l.key)
-                .filter(|k| cfg.gerrit_key_projects.iter().any(|p| p == k.project()))
-                .cloned(),
-        );
-        search.sort();
-        search.dedup();
         out.push(Watched {
             key: t.key.clone(),
-            search,
+            search: search_keys(cfg, t, customers),
         });
     }
     out
+}
+
+/// The keys a commit message or pull request title names for `t`: its own
+/// and its copies'; for a customer ticket, whose key no change names, also
+/// the EX and LU tickets linked as its fixes.
+fn search_keys(cfg: &Config, t: &Ticket, customer: bool) -> Vec<IssueKey> {
+    let mut search = vec![t.key.clone()];
+    search.extend(t.also.iter().cloned());
+    search.extend(
+        t.links
+            .iter()
+            .filter(|l| customer && cfg.is_fix_relation(&l.relation))
+            .map(|l| &l.key)
+            .filter(|k| cfg.gerrit_key_projects.iter().any(|p| p == k.project()))
+            .cloned(),
+    );
+    search.sort();
+    search.dedup();
+    search
 }
 
 /// Every known fixVersion, by project and name: a name can exist in two projects.
@@ -343,6 +357,8 @@ struct Context<'a> {
     cfg: &'a Config,
     raw: &'a RawData,
     patches: &'a Patches,
+    /// The EMF pull requests, by each key they name.
+    pulls: HashMap<&'a IssueKey, Vec<&'a PullRef>>,
     /// Why the patches were not all read, when they were not.
     patch_gap: Option<String>,
     /// The judged releases' dates; empty until the release views are built.
@@ -352,13 +368,49 @@ struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    /// An item with its Gerrit changes, what they say about its delivery in
-    /// `view`, and what says its fix awaits verification.
+    /// An item with its Gerrit changes and EMF pull requests, what they say
+    /// about its delivery in `view`, and what says its fix awaits verification.
     fn item(&self, mut t: Ticket, view: ViewId) -> Ticket {
         t.patches = self.patches.map.get(&t.key).cloned().unwrap_or_default();
-        t.delivery = rules::delivery(&t.patches, &self.deciding(view));
+        t.prs = self.prs_of(&t, ViewId::CUSTOMERS.contains(&view));
+        t.delivery = rules::delivery(
+            &t.patches,
+            &self.deciding(view),
+            &t.prs,
+            &self.emf_branches(&t, view),
+        );
         t.verification = rules::verification(self.cfg, &t);
         t
+    }
+
+    /// The EMF pull requests that name `t`, its copies or, for a customer
+    /// ticket, the tickets linked as its fixes.
+    fn prs_of(&self, t: &Ticket, customer: bool) -> Vec<PullRef> {
+        let mut found: BTreeMap<u64, PullRef> = BTreeMap::new();
+        for key in search_keys(self.cfg, t, customer) {
+            for p in self.pulls.get(&key).into_iter().flatten() {
+                found.insert(p.number, (*p).clone());
+            }
+        }
+        found.into_values().collect()
+    }
+
+    /// The EMF branches `t`'s pull requests must land on in `view`: those of
+    /// its EXA6 releases, of the view's release, or of customer tickets.
+    fn emf_branches(&self, t: &Ticket, view: ViewId) -> Vec<&'a str> {
+        let names: Vec<&str> = match view {
+            ViewId::Exa6 => t.fix_versions.iter().map(String::as_str).collect(),
+            v if ViewId::CUSTOMERS.contains(&v) => vec![CUSTOMERS_EMF_KEY],
+            v => vec![v.label()],
+        };
+        names
+            .into_iter()
+            .filter_map(|n| self.cfg.emf_branches.get(n))
+            .flatten()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// `tickets` as `view` shows them.
@@ -379,33 +431,51 @@ impl<'a> Context<'a> {
             .collect()
     }
 
-    /// The release expected to carry a customer ticket's patches in review,
-    /// and its date: of their branches' releases, the one dated last, an
-    /// undated one counting as last. `None` once every patch is merged.
+    /// The release expected to carry a customer ticket's Lustre patches not
+    /// in a tag yet, and its date: of their branches' releases, the one dated
+    /// last, an undated one counting as last. `None` once every one is.
     fn expected_release(&self, d: &Delivery) -> Option<(String, Option<NaiveDate>)> {
         d.branches
             .iter()
-            .filter(|b| !b.merged)
+            .filter(|b| !b.landed())
             .filter_map(|b| self.cfg.tag_families.iter().find(|f| f.branch == b.branch))
             .map(|f| (f.release.clone(), self.releases.get(&f.release).copied()))
             .max_by_key(|(_, date)| date.unwrap_or(NaiveDate::MAX))
     }
 
-    /// For `view`'s notes: how many of `items` patches decide, and which
-    /// releases cannot date those in review. Empty where no branch decides.
+    /// For `view`'s notes: how many of `items` their changes decide, and
+    /// which releases cannot date those not landed yet. Empty where no
+    /// branch decides.
     fn patch_notes(&self, view: ViewId, items: &[&Ticket], noun: &str) -> Vec<String> {
         let families = self.deciding(view);
-        if families.is_empty() {
+        let decided: Vec<&Delivery> = items.iter().filter_map(|t| t.delivery.as_ref()).collect();
+        if families.is_empty() && decided.is_empty() {
             return Vec::new();
         }
-        let branches: Vec<&str> = families.iter().map(|f| f.branch.as_str()).collect();
-        let decided: Vec<&Delivery> = items.iter().filter_map(|t| t.delivery.as_ref()).collect();
-        let merged = decided.iter().filter(|d| d.merged).count();
+        let lustre: Vec<&str> = families.iter().map(|f| f.branch.as_str()).collect();
+        let emf: BTreeSet<&str> = decided
+            .iter()
+            .flat_map(|d| d.branches.iter().filter(|b| b.emf))
+            .map(|b| b.branch.as_str())
+            .collect();
+        let by = match (lustre.is_empty(), emf.is_empty()) {
+            (false, true) => format!("Lustre patches on {}", lustre.join(" or ")),
+            (true, _) => format!(
+                "EMF pull requests into {}",
+                emf.into_iter().collect::<Vec<_>>().join(" or ")
+            ),
+            (false, false) => format!(
+                "Lustre patches on {} and EMF pull requests into {}",
+                lustre.join(" or "),
+                emf.into_iter().collect::<Vec<_>>().join(" or ")
+            ),
+        };
+        let done = decided.iter().filter(|d| d.done).count();
+        let waiting = decided.iter().filter(|d| d.merged && !d.done).count();
         let mut notes = vec![format!(
-            "Patches on {} decide the delivery of {}: {merged} merged, {} in review.",
-            branches.join(" or "),
+            "{by} decide the delivery of {}: {done} done, {waiting} merged and due in the next tag, {} in review.",
             counted(decided.len(), noun),
-            decided.len() - merged
+            decided.len() - done - waiting
         )];
         if ViewId::CUSTOMERS.contains(&view) {
             notes.extend(
@@ -472,7 +542,7 @@ impl<'a> Context<'a> {
             });
         if let Some(d) = t.delivery.as_mut() {
             t.fix = None;
-            t.fix_state = if d.merged {
+            t.fix_state = if d.done {
                 FixState::Delivered
             } else {
                 FixState::UnderWay
@@ -586,9 +656,10 @@ impl<'a> Context<'a> {
             .filter(|t| t.severity.as_ref().is_some_and(Severity::is_from_priority))
             .count();
         let idle = rules::severity_idle(cfg, &refs);
-        // A complete ticket waits for its tag, so its idle time is no stall.
-        let (complete, waiting): (Vec<&Ticket>, Vec<&Ticket>) =
-            refs.iter().partition(|t| rules::is_complete(t));
+        // A ticket whose changes are merged waits for its tag, if anything,
+        // so its idle time is no stall.
+        let (merged, waiting): (Vec<&Ticket>, Vec<&Ticket>) =
+            refs.iter().partition(|t| rules::is_merged(t));
         let idle_over = |days: i64| -> Vec<&Ticket> {
             waiting
                 .iter()
@@ -610,26 +681,22 @@ impl<'a> Context<'a> {
             .copied()
             .filter(|t| t.fix_state == FixState::Delivered)
             .collect();
-        let next_tag: Vec<&Ticket> = complete
+        let next_tag: Vec<&Ticket> = merged
             .iter()
             .copied()
-            .filter(|t| {
-                t.delivery
-                    .as_ref()
-                    .is_some_and(|d| d.branches.iter().any(|b| b.tag.is_none()))
-            })
+            .filter(|t| !rules::is_done(t))
             .collect();
         let committed = refs.iter().filter(|t| t.committed.is_some()).count();
         let dated = refs.iter().filter(|t| rules::target(t).is_some()).count();
-        // Nor does it need a date: it is in a tag, or due in the next one.
-        let complete_undated = complete
+        // A done ticket needs no date.
+        let done_undated = refs
             .iter()
-            .filter(|t| rules::target(t).is_none())
+            .filter(|t| rules::is_done(t) && rules::target(t).is_none())
             .count();
-        let undated: Vec<&Ticket> = waiting
+        let undated: Vec<&Ticket> = refs
             .iter()
             .copied()
-            .filter(|t| rules::target(t).is_none())
+            .filter(|t| !rules::is_done(t) && rules::target(t).is_none())
             .collect();
         let groups = rules::date_groups(cfg, self.today, &refs);
         let date_verdict = groups
@@ -715,12 +782,12 @@ impl<'a> Context<'a> {
             ));
         }
         let fix_note = if next_tag.is_empty() {
-            vec![words("patches merged or every linked fix done")]
+            vec![words("changes landed or every linked fix done")]
         } else {
             vec![
-                words("patches merged or every linked fix done; "),
+                words("changes landed or every linked fix done; "),
                 count_of(
-                    format!("{} due in the next tag", next_tag.len()),
+                    format!("{} more merged, due in the next tag", next_tag.len()),
                     "Due in the next tag",
                     keys_of(&next_tag),
                 ),
@@ -734,8 +801,8 @@ impl<'a> Context<'a> {
                 keys_of(&undated),
             ),
         ];
-        if complete_undated > 0 {
-            dated_note.push(words(format!(", {complete_undated} complete")));
+        if done_undated > 0 {
+            dated_note.push(words(format!(", {done_undated} done")));
         }
         let undated = undated.len();
         let kpis = vec![
@@ -1152,24 +1219,25 @@ impl<'a> Context<'a> {
     ) -> View {
         let cfg = self.cfg;
         let today = self.today;
-        let complete = subset(items, rules::is_complete);
-        // A patch in review puts an item in review, whatever its Jira status.
+        let done = subset(items, rules::is_done);
+        // A change in review, or one waiting for its tag, puts an item in
+        // review, whatever its Jira status.
         let review = subset(items, |t| {
-            !rules::is_complete(t) && (t.delivery.is_some() || cfg.in_review(&t.status))
+            !rules::is_done(t) && (t.delivery.is_some() || cfg.in_review(&t.status))
         });
         let tests = subset(items, rules::is_test_case).len();
-        // The risk numbers leave out test cases and complete items, and say so.
-        let work = subset(items, |t| !rules::is_test_case(t) && !rules::is_complete(t));
-        let complete_work = subset(&complete, |t| !rules::is_test_case(t));
+        // The risk numbers leave out test cases and done items, and say so.
+        let work = subset(items, |t| !rules::is_test_case(t) && !rules::is_done(t));
+        let done_work = subset(&done, |t| !rules::is_test_case(t));
         let left_out = |what: &str| {
             count_of(
-                format!("{} complete", complete_work.len()),
-                &format!("Complete, not counted in {what}"),
-                keys_of(&complete_work),
+                format!("{} done", done_work.len()),
+                &format!("Done, not counted in {what}"),
+                keys_of(&done_work),
             )
         };
         let uncounted = |what: &str| -> Vec<TilePart> {
-            match (tests, complete_work.is_empty()) {
+            match (tests, done_work.is_empty()) {
                 (0, true) => Vec::new(),
                 (n, true) => vec![words(format!(", {n} test cases not counted"))],
                 (0, false) => vec![words(", "), left_out(what), words(" not counted")],
@@ -1192,15 +1260,11 @@ impl<'a> Context<'a> {
             "In review or verification",
             keys_of(&review),
         );
-        let open_note = if complete.is_empty() {
+        let open_note = if done.is_empty() {
             vec![review_part]
         } else {
             vec![
-                count_of(
-                    format!("{} complete", complete.len()),
-                    "Complete",
-                    keys_of(&complete),
-                ),
+                count_of(format!("{} done", done.len()), "Done", keys_of(&done)),
                 words(", "),
                 review_part,
             ]
@@ -1515,7 +1579,8 @@ mod tests {
     use crate::confluence::LabelledDate;
     use crate::fetch::{Note, Scope};
     use crate::model::{
-        ChangeStatus, DateSource, HealthPart, Instance, LinkRef, PatchRef, PmRef, TargetSource,
+        ChangeStatus, DateSource, HealthPart, Instance, LinkRef, PatchRef, PmRef, PullState,
+        TargetSource,
     };
     use crate::rules::tests::{d, idle, ticket, today};
     use url::Url;
@@ -1726,6 +1791,7 @@ mod tests {
                 (EXA_SD, None),
             ]),
             jira_cloud: Url::parse("https://jira.example/").unwrap(),
+            pulls: vec![],
             unscheduled: Some(395),
             pm_pages: HashMap::new(),
             fixes: [
@@ -2670,6 +2736,22 @@ mod tests {
         );
     }
 
+    fn emf_pull(number: u64, branch: &str, state: PullState, keys: &[&str]) -> crate::github::Pull {
+        crate::github::Pull {
+            pr: PullRef {
+                number,
+                url: Url::parse(&format!(
+                    "https://github.com/whamcloud/exascaler-management-framework/pull/{number}"
+                ))
+                .unwrap(),
+                branch: branch.into(),
+                state,
+            },
+            keys: keys.iter().map(|k| k.parse().unwrap()).collect(),
+            updated: chrono::Utc::now(),
+        }
+    }
+
     fn patch(number: u64, branch: &str, status: ChangeStatus, tag: Option<&str>) -> PatchRef {
         PatchRef {
             number,
@@ -2885,7 +2967,7 @@ mod tests {
             parts("Fix complete"),
             [
                 count("1", "Fix complete", "DDN-6000"),
-                words("patches merged or every linked fix done"),
+                words("changes landed or every linked fix done"),
             ]
         );
         assert_eq!(
@@ -2913,10 +2995,10 @@ mod tests {
     }
 
     #[test]
-    fn complete_tickets_count_as_complete_not_as_stalled() {
+    fn done_needs_every_change_landed_and_merged_ones_are_never_stalled() {
         let cfg = Config::default();
         let raw = raw();
-        // Merged, not in a tag yet: due in the next one.
+        // Merged, not in a tag yet: due in the next one, still open.
         let merged = patch(1, "b_es6_0", ChangeStatus::Merged, None);
         let tagged = patch(2, "b_es6_0", ChangeStatus::Merged, Some("2.14.0-ddn262"));
         let in_review = patch(3, "b_es6_0", ChangeStatus::New, None);
@@ -2947,11 +3029,12 @@ mod tests {
                 .any(|b| b.key.as_str() == key)
         };
 
-        // DDN-3571, S1 and idle 1041 days, put All others off track; complete,
-        // it waits for its tag and needs no date.
+        // DDN-3571, S1 and idle 1041 days, put All others off track. Merged,
+        // it waits for its tag, not for anyone: no stall, but open, dated by
+        // the release expected to carry it.
         assert_eq!(
             (view(&without, OTHERS).verdict, view(&with, OTHERS).verdict),
-            (Verdict::OffTrack, Verdict::NoDate)
+            (Verdict::OffTrack, Verdict::OnTrack)
         );
         assert!(blocks(&without, OTHERS, "DDN-3571") && !blocks(&with, OTHERS, "DDN-3571"));
         assert_eq!(
@@ -2965,32 +3048,34 @@ mod tests {
         assert_eq!(
             tile(&with, OTHERS, "Fix complete"),
             Some((
-                "2".into(),
-                "patches merged or every linked fix done; 1 due in the next tag".into()
-            ))
+                "1".into(),
+                "changes landed or every linked fix done; 1 more merged, due in the next tag"
+                    .into()
+            )),
+            "DDN-6000's patch is in a tag, DDN-3571's is not yet"
         );
         assert_eq!(
             tile(&with, NVIDIA, "Fix complete"),
-            Some(("0".into(), "patches merged or every linked fix done".into()))
+            Some(("0".into(), "changes landed or every linked fix done".into()))
         );
         assert_eq!(
             tile(&with, OTHERS, "Dated").map(|(_, note)| note),
-            Some("0 committed, 3 have no date, 2 complete".into())
+            Some("0 committed, 3 have no date, 1 done".into())
         );
         assert_eq!(view(&with, OTHERS).undated, 3);
-        // EX-1, a Blocker in EXA6, leaves the blockers and the risk tiles.
-        // EX-2 and EX-3 (In Review) count as complete in the open scope, and
-        // EX-50 (To Do) as in review, by its patch.
-        assert!(blocks(&without, EXA6, "EX-1") && !blocks(&with, EXA6, "EX-1"));
+        // EX-1, a Blocker merged but not in a tag, still blocks; EX-3, in a
+        // tag, is done and leaves the risk tiles; EX-50 (To Do) is in review
+        // by its patch.
+        assert!(blocks(&with, EXA6, "EX-1"));
         assert_eq!(
             tile(&with, EXA6, "Blocker priority"),
-            Some(("0".into(), "+0 blocked, 3 complete not counted".into()))
+            Some(("1".into(), "+0 blocked, 1 done not counted".into()))
         );
         let left_out = view(&with, EXA6)
             .kpis
             .iter()
             .find(|k| k.label == "Blocker priority")
-            .and_then(|k| k.note_parts.iter().find(|p| p.text == "3 complete"))
+            .and_then(|k| k.note_parts.iter().find(|p| p.text == "1 done"))
             .map(|p| {
                 (
                     p.filter.clone(),
@@ -3000,18 +3085,68 @@ mod tests {
         assert_eq!(
             left_out,
             Some((
-                Some("Complete, not counted in Blocker priority".to_string()),
-                vec!["EX-2".to_string(), "EX-3".to_string(), "EX-1".to_string()]
+                Some("Done, not counted in Blocker priority".to_string()),
+                vec!["EX-3".to_string()]
             )),
             "what a tile leaves out can be shown too"
         );
         assert_eq!(
             tile(&with, EXA6, "Open scope").map(|(_, note)| note),
             Some(format!(
-                "3 complete, {} in review or verification",
-                cfg.small_release_max + 1
+                "1 done, {} in review or verification",
+                cfg.small_release_max + 3
             ))
         );
+    }
+
+    #[test]
+    fn emf_pull_requests_decide_delivery_on_their_releases_branch() {
+        let mut raw = raw();
+        raw.pulls = vec![
+            // EX-60 is in EXA7 Beta: only its release branch counts.
+            emf_pull(6062, "release/EXA7_beta", PullState::Merged, &["EX-60"]),
+            emf_pull(6011, "master", PullState::Open, &["EX-60"]),
+            // EX-100 is DDN-7162's linked fix: merged on master, done for the customer.
+            emf_pull(6053, "master", PullState::Merged, &["EX-100"]),
+            // EX-70 is in EXA7 GA, on master: one merged and one open is still open.
+            emf_pull(6100, "master", PullState::Merged, &["EX-70"]),
+            emf_pull(6101, "master", PullState::Open, &["EX-70"]),
+        ];
+        let snap = build(&raw);
+        let delivery = |id: ViewId, key: &str| {
+            item(&snap, id, key).delivery.as_ref().map(|d| {
+                (
+                    d.branches
+                        .iter()
+                        .map(|b| b.branch.clone())
+                        .collect::<Vec<_>>(),
+                    d.done,
+                )
+            })
+        };
+
+        assert_eq!(
+            delivery(EXA7_BETA, "EX-60"),
+            Some((vec!["release/EXA7_beta".to_string()], true))
+        );
+        assert_eq!(
+            item(&snap, EXA7_BETA, "EX-60").prs.len(),
+            2,
+            "every pull request naming it shows"
+        );
+        assert_eq!(
+            delivery(EXA7_GA, "EX-70"),
+            Some((vec!["master".to_string()], false))
+        );
+        assert_eq!(
+            delivery(NVIDIA, "DDN-7162"),
+            Some((vec!["master".to_string()], true))
+        );
+        assert_eq!(
+            item(&snap, NVIDIA, "DDN-7162").fix_state,
+            FixState::Delivered
+        );
+        assert_eq!(delivery(EXA6, "EX-1"), None, "no pull request names it");
     }
 
     #[test]
@@ -3111,10 +3246,11 @@ mod tests {
         );
         assert_eq!(delivery(EXA7_BETA, "EX-60"), None);
         assert!(view(&with, EXA6).notes.contains(
-            &"Patches on b_es6_0 decide the delivery of 1 item: 1 merged, 0 in review.".to_string()
+            &"Lustre patches on b_es6_0 decide the delivery of 1 item: 1 done, 0 merged and due in the next tag, 0 in review."
+                .to_string()
         ));
         assert!(view(&with, ALL).notes.contains(
-            &"Patches on b_es6_0 or b_es7_0 decide the delivery of 3 tickets: 1 merged, 2 in review."
+            &"Lustre patches on b_es6_0 or b_es7_0 decide the delivery of 3 tickets: 1 done, 0 merged and due in the next tag, 2 in review."
                 .to_string()
         ));
     }
@@ -3176,6 +3312,7 @@ mod tests {
     fn the_snapshot_layout_is_pinned_to_its_format() {
         let cfg = Config::default();
         let mut raw = raw();
+        raw.pulls = vec![emf_pull(6011, "master", PullState::Merged, &["EX-1"])];
         raw.health = Some(BuildHealth {
             url: Url::parse("https://localhost:9835/").unwrap(),
             days: 7,

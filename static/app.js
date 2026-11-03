@@ -419,7 +419,7 @@ function customerDates(v) {
         el("strong", {}, `${fmtDate(g.date)}, ${left}: `),
         groupToggle({ atRisk: false, text: `${n} ticket${n > 1 ? "s" : ""}` }),
         `, ${statuses}`,
-        g.complete ? `, ${g.complete} complete` : null,
+        g.done ? `, ${g.done} done` : null,
         reason ? [". ", reason] : null),
       chip(g.verdict)));
   }
@@ -459,7 +459,7 @@ function blockerList(id, list, shown, name) {
     el("span", { class: "reasons" },
       toneChip(b.tone, b.reason),
       b.verification ? el("span", { class: "chip verify", title: b.verification }, "Awaiting verification") : null,
-      b.complete ? el("span", { class: "chip ok", title: "Its patches are merged" }, "Complete") : null)));
+      b.done ? el("span", { class: "chip ok", title: "Every change landed" }, "Done") : null)));
   const toggle = () => { if (all) ui.expanded.delete(id); else ui.expanded.add(id); render(); };
   return el("div", { class: "blockers" }, rows,
     el("p", { class: "more" },
@@ -512,21 +512,30 @@ function exportTools(label, { header, rows, keys }) {
 /** "es6 ddn262", "es6 merged" before its first tag, or "es7 review". */
 const patchText = (branch, merged, tag) => `${branchName(branch)} ${merged ? (tag ? tag.replace(/^.*-/, "") : "merged") : "review"}`;
 
+/** "EMF master merged", "EMF release/EXA7_beta review": an EMF pull request's branch and state. */
+const pullText = (branch, merged) => `EMF ${branch} ${merged ? "merged" : "review"}`;
+
+/** A ticket's Lustre patches and EMF pull requests, each linked; abandoned
+ * and closed ones are left out. */
 function patchCell(t) {
-  const shown = (t.patches || []).filter((p) => p.status !== "abandoned");
-  if (!shown.length) return "";
-  return el("span", { class: "patches" }, shown.map((p) => {
-    const text = patchText(p.branch, p.status === "merged", p.first_tag);
-    return el("a", { class: `chip ${p.status === "merged" ? "ok" : "neutral"}`, href: p.url, target: "_blank", rel: "noopener noreferrer", title: `Change ${p.number}` }, text);
-  }));
+  const chip = (merged, href, title, text) =>
+    el("a", { class: `chip ${merged ? "ok" : "neutral"}`, href, target: "_blank", rel: "noopener noreferrer", title }, text);
+  const shown = [
+    ...(t.patches || []).filter((p) => p.status !== "abandoned")
+      .map((p) => chip(p.status === "merged", p.url, `Change ${p.number}`, patchText(p.branch, p.status === "merged", p.first_tag))),
+    ...(t.prs || []).filter((p) => p.state !== "closed")
+      .map((p) => chip(p.state === "merged", p.url, `Pull request ${p.number}`, pullText(p.branch, p.state === "merged"))),
+  ];
+  return shown.length ? el("span", { class: "patches" }, shown) : "";
 }
 
-/** Where the patches that decide a ticket's delivery are, branch by branch
+/** Where the changes that decide a ticket's delivery are, branch by branch
  * ("es6 merged (next tag)" until the next ddn tag has them), and the release
- * expected to carry those in review. */
+ * expected to carry those not landed yet. */
 function deliveryText(d) {
   const where = d.branches
-    .map((b) => (b.merged && !b.tag ? `${branchName(b.branch)} merged (next tag)` : patchText(b.branch, b.merged, b.tag)))
+    .map((b) => (b.emf ? pullText(b.branch, b.merged)
+      : b.merged && !b.tag ? `${branchName(b.branch)} merged (next tag)` : patchText(b.branch, b.merged, b.tag)))
     .join(", ");
   return d.release ? `${where}, for ${d.release}` : where;
 }
@@ -600,20 +609,20 @@ function customerDateCell(t, editable) {
 const sevPri = (t) => (t.severity ? t.severity.label : t.priority || "");
 /** Every patch that decides the ticket's delivery is merged: it is in a ddn
  * tag, or due in the next one. */
-const isComplete = (t) => Boolean(t.delivery && t.delivery.merged);
+const isDone = (t) => Boolean(t.delivery && t.delivery.done);
 /** The status, with pills for what it may not say: the fix awaits
- * verification (that status or a label), or the ticket is complete. */
+ * verification (that status or a label), or the ticket is done. */
 function statusCell(t) {
   const pills = [
     t.verification ? el("span", { class: "badge verify", title: "Awaiting verification" }, t.verification) : null,
-    isComplete(t) ? el("span", { class: "badge complete", title: "Its patches are merged: in a ddn tag, or due in the next one" }, "Complete") : null,
+    isDone(t) ? el("span", { class: "badge done", title: "Every change landed: Lustre patches in a ddn tag, EMF pull requests on the release's branch" }, "Done") : null,
   ].filter(Boolean);
   if (!pills.length) return t.status;
   const parts = [...(t.verification === t.status ? [] : [t.status]), ...pills];
   return el("span", {}, parts.flatMap((part, i) => (i ? [" ", part] : [part])));
 }
-/** Highlights a row whose fix awaits verification, or that is complete. */
-const rowClass = (t) => [t.verification ? "awaiting" : null, isComplete(t) ? "complete" : null].filter(Boolean).join(" ") || null;
+/** Highlights a row whose fix awaits verification, or that is done. */
+const rowClass = (t) => [t.verification ? "awaiting" : null, isDone(t) ? "done" : null].filter(Boolean).join(" ") || null;
 const unknownIdle = (t) => t.idle_days === null || t.idle_days === undefined;
 /** Idle time. Customer tickets are all read, so a missing one could not be
  * read and shows as unknown; release items are read only where a rule needs it. */
@@ -628,7 +637,7 @@ const idleCell = (customers) => (t) => {
 const idleSort = (customers) => (t) => (unknownIdle(t) ? (customers ? Infinity : -1) : t.idle_days);
 const fixCell = (t) => {
   if (t.delivery) {
-    const why = t.delivery.merged ? "Complete: every patch is merged" : "A patch is still in review";
+    const why = t.delivery.done ? "Done: every change landed" : "A change is still in review or waiting for its tag";
     return el("span", { title: why }, deliveryText(t.delivery));
   }
   if (t.fix) return el("span", { title: `${t.fix.status}` }, link(t.fix.url, `${t.fix.key} ${t.fix.version}`));
@@ -643,7 +652,7 @@ function keyCell(t) {
 
 function columns(v) {
   const summary = { label: "Summary", sort: (t) => t.summary, cell: (t) => el("span", { title: t.summary }, t.summary), cls: "cell-sum" };
-  const patches = { label: "Patches", sort: (t) => (t.patches || []).length, cell: patchCell };
+  const patches = { label: "Patches", sort: (t) => (t.patches || []).length + (t.prs || []).length, cell: patchCell };
   if (v.kind === "customers") {
     return [
       { label: "Key", sort: (t) => t.key, cell: keyCell },

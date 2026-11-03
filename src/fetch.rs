@@ -14,6 +14,7 @@ use crate::commitments::{self, Commitments};
 use crate::config::{Config, InitiativeConfig, TagFamily};
 use crate::confluence::{self, PmPage, PmParser};
 use crate::gerrit::{self, Change, Gerrit};
+use crate::github;
 use crate::http;
 use crate::jira::{self, Jira, Tickets, Version, str_at};
 use crate::model::{
@@ -119,6 +120,8 @@ pub(crate) struct RawData {
     pub(crate) added: BTreeMap<ViewId, Option<Vec<IssueKey>>>,
     /// Jira cloud's site root, for searches of what a tile counts.
     pub(crate) jira_cloud: Url,
+    /// The EMF pull requests; none when GitHub could not be read.
+    pub(crate) pulls: Vec<github::Pull>,
     /// Open EX items with no scheduled EXA6 release; `None` when not read.
     pub(crate) unscheduled: Option<usize>,
     /// PM status pages by page id.
@@ -485,10 +488,11 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
     jobs.extend(cfg.initiatives.iter().map(Job::Initiative));
     // Queries, pages and initiatives share one pool, so `workers` is the most
     // requests in flight to the Atlassian site; EXA Reporter is another host.
-    let (done, health) = std::thread::scope(|s| {
+    let (done, health, pulls) = std::thread::scope(|s| {
         let health = s.spawn(|| reporter::fetch(cfg));
+        let pulls = s.spawn(|| github::pulls(cfg));
         let done = par_map(&jobs, cfg.workers, |job| run(&jira, &parser, cfg, *job));
-        (done, health.join())
+        (done, health.join(), pulls.join())
     });
     let Collected {
         mut rows,
@@ -497,6 +501,20 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
         lists_complete,
     } = collect(done, &pages, &mut errors, &mut notes)?;
 
+    // EMF pull requests decide delivery wherever an EMF branch is set.
+    let (pulls, github_error) = match pulls.map_err(|_| anyhow!("the GitHub thread panicked"))? {
+        Ok(p) => (p, None),
+        Err(e) => {
+            warn!("GitHub: {e:#}");
+            if !cfg.emf_branches.is_empty() {
+                notes.push(Note::gap(
+                    ViewId::CUSTOMERS.into_iter().chain(ViewId::RELEASES).chain([ViewId::ExaSd]),
+                    format!("EMF pull requests not read ({e:#}): where they are missing, Jira decides delivery."),
+                ));
+            }
+            (Vec::new(), Some(format!("{e:#}")))
+        }
+    };
     let health = match health.map_err(|_| anyhow!("the EXA Reporter thread panicked"))? {
         Ok(h) => Some(h),
         Err(e) => {
@@ -626,6 +644,10 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
         source("Jira Whamcloud", &errors.whamcloud),
         source("Confluence", &errors.confluence),
         reporter_status,
+        SourceStatus {
+            name: "GitHub".into(),
+            error: github_error,
+        },
     ];
 
     Ok(RawData {
@@ -640,6 +662,7 @@ pub(crate) fn gather(cfg: &Config) -> Result<RawData> {
         sd_closed,
         added,
         jira_cloud: jira.base(Instance::Cloud).clone(),
+        pulls,
         unscheduled,
         pm_pages,
         fixes: fixes.found,

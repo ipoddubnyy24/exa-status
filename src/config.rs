@@ -325,7 +325,22 @@ pub(crate) struct Config {
     pub(crate) gerrit_key_projects: Vec<String>,
     /// Tag families, one per branch.
     pub(crate) tag_families: Vec<TagFamily>,
+    /// The gh CLI, which holds the GitHub token; a full path, since the
+    /// background service runs without the login shell's PATH.
+    pub(crate) gh_command: PathBuf,
+    /// The gh account whose token is used; `None` takes the active one.
+    pub(crate) github_user: Option<String>,
+    /// The EMF repository, `owner/name`.
+    pub(crate) emf_repo: String,
+    /// The EMF branches a release's pull requests land on, by release: an
+    /// EXA6 fixVersion, "EXA7 Beta", "EXA7 GA", "EXA SD" for all its phases,
+    /// and "Customers" for customer tickets. A ticket's pull requests into
+    /// them decide its delivery, as its Lustre patches do.
+    pub(crate) emf_branches: BTreeMap<String, Vec<String>>,
 }
+
+/// The `emf_branches` entry for customer tickets.
+pub(crate) const CUSTOMERS_EMF_KEY: &str = "Customers";
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -541,6 +556,27 @@ impl Default for Config {
                     release: ViewId::Exa7Beta.label().into(),
                 },
             ],
+            gh_command: PathBuf::from("/opt/homebrew/bin/gh"),
+            github_user: Some("ipoddubnyy24".into()),
+            emf_repo: "whamcloud/exascaler-management-framework".into(),
+            // Chosen on 3 Nov 2026: 6.3.9 shipped from its own branch, the
+            // next releases from master until theirs is cut.
+            emf_branches: BTreeMap::from([
+                ("ES6.3.10".into(), strings(&["master"])),
+                ("ES6.3.9_C1".into(), strings(&["maint/sfa-6.3.9_C1"])),
+                (ViewId::Exa7Beta.label().into(), strings(&["release/EXA7_beta"])),
+                (ViewId::Exa7Ga.label().into(), strings(&["master"])),
+                (ViewId::ExaSd.label().into(), strings(&["feature/nvmesh-p0"])),
+                (
+                    CUSTOMERS_EMF_KEY.into(),
+                    strings(&[
+                        "master",
+                        "maint/sfa-6.3.9_C1",
+                        "release/EXA7_beta",
+                        "feature/nvmesh-p0",
+                    ]),
+                ),
+            ]),
         }
     }
 }

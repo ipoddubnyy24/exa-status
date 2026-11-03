@@ -30,6 +30,8 @@ const HISTORY_FORMAT: u32 = 3;
 pub(crate) const COMMENTS_FILE: &str = "comments.json";
 /// First ddn tag per merged Gerrit revision.
 pub(crate) const TAGS_FILE: &str = "tags.json";
+/// EMF pull requests read so far, so a refresh reads only those updated since.
+pub(crate) const PULLS_FILE: &str = "pulls.json";
 /// What the last refresh worker wrote to stderr.
 pub(crate) const REFRESH_LOG: &str = "refresh.log";
 /// Held by the running refresh, so a second one (a manual `refresh-once`

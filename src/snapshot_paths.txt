@@ -1,4 +1,4 @@
-format 14
+format 15
 .duration_secs
 .format
 .generated_at
@@ -11,7 +11,7 @@ format 14
 .tabs[].verdict
 .tabs[].views
 .tabs[].views[].blockers
-.tabs[].views[].blockers[].complete
+.tabs[].views[].blockers[].done
 .tabs[].views[].blockers[].key
 .tabs[].views[].blockers[].owner
 .tabs[].views[].blockers[].reason
@@ -23,9 +23,9 @@ format 14
 .tabs[].views[].date_groups[].by_status
 .tabs[].views[].date_groups[].by_status[].count
 .tabs[].views[].date_groups[].by_status[].status
-.tabs[].views[].date_groups[].complete
 .tabs[].views[].date_groups[].date
 .tabs[].views[].date_groups[].days_left
+.tabs[].views[].date_groups[].done
 .tabs[].views[].date_groups[].keys
 .tabs[].views[].date_groups[].reason
 .tabs[].views[].date_groups[].stalled
@@ -55,7 +55,7 @@ format 14
 .tabs[].views[].id
 .tabs[].views[].initiatives
 .tabs[].views[].initiatives[].blockers
-.tabs[].views[].initiatives[].blockers[].complete
+.tabs[].views[].initiatives[].blockers[].done
 .tabs[].views[].initiatives[].blockers[].key
 .tabs[].views[].initiatives[].blockers[].owner
 .tabs[].views[].initiatives[].blockers[].reason
@@ -100,9 +100,11 @@ format 14
 .tabs[].views[].items[].delivery
 .tabs[].views[].items[].delivery.branches
 .tabs[].views[].items[].delivery.branches[].branch
+.tabs[].views[].items[].delivery.branches[].emf
 .tabs[].views[].items[].delivery.branches[].merged
 .tabs[].views[].items[].delivery.branches[].tag
 .tabs[].views[].items[].delivery.date
+.tabs[].views[].items[].delivery.done
 .tabs[].views[].items[].delivery.merged
 .tabs[].views[].items[].delivery.release
 .tabs[].views[].items[].due
@@ -134,6 +136,11 @@ format 14
 .tabs[].views[].items[].patches[].status
 .tabs[].views[].items[].patches[].url
 .tabs[].views[].items[].priority
+.tabs[].views[].items[].prs
+.tabs[].views[].items[].prs[].branch
+.tabs[].views[].items[].prs[].number
+.tabs[].views[].items[].prs[].state
+.tabs[].views[].items[].prs[].url
 .tabs[].views[].items[].severity
 .tabs[].views[].items[].severity.from_priority
 .tabs[].views[].items[].severity.label
@@ -193,6 +200,7 @@ format 14
 .tabs[].views[].tests[].links
 .tabs[].views[].tests[].patches
 .tabs[].views[].tests[].priority
+.tabs[].views[].tests[].prs
 .tabs[].views[].tests[].severity
 .tabs[].views[].tests[].site
 .tabs[].views[].tests[].source

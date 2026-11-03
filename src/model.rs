@@ -11,7 +11,7 @@ use url::Url;
 /// Version of the snapshot layout. The server serves a snapshot only when it
 /// matches, so a server built before a layout change never feeds its embedded
 /// page a snapshot written by a newer worker.
-pub(crate) const SNAPSHOT_FORMAT: u32 = 14;
+pub(crate) const SNAPSHOT_FORMAT: u32 = 15;
 
 /// A view (sub-tab). Notes name the views they concern, and the UI keeps the
 /// selected one across refreshes by its id.
@@ -355,26 +355,66 @@ pub(crate) struct PatchRef {
     pub(crate) first_tag: Option<String>,
 }
 
-/// A ticket's patches on one branch that decides its delivery.
+/// An EMF pull request's state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PullState {
+    /// Open for review.
+    Open,
+    /// Merged into its branch.
+    Merged,
+    /// Closed without merging.
+    Closed,
+}
+
+/// An EMF pull request that names a ticket.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PullRef {
+    /// Pull request number.
+    pub(crate) number: u64,
+    /// Link to it.
+    pub(crate) url: Url,
+    /// The branch it merges into, e.g. `release/EXA7_beta`.
+    pub(crate) branch: String,
+    /// Review state.
+    pub(crate) state: PullState,
+}
+
+/// A ticket's changes on one branch that decides its delivery.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BranchDelivery {
-    /// The branch, e.g. `b_es6_0`.
+    /// The branch: a Lustre one such as `b_es6_0`, or an EMF one such as
+    /// `release/EXA7_beta`.
     pub(crate) branch: String,
-    /// Every one of its patches is merged.
+    /// An EMF branch on GitHub, rather than a Lustre one on Gerrit.
+    pub(crate) emf: bool,
+    /// Every one of its changes is merged.
     pub(crate) merged: bool,
-    /// Once every one is in a tag, the newest of their first tags: the first
-    /// build that has them all, e.g. `2.14.0-ddn262`.
+    /// Once every Lustre patch is in a tag, the newest of their first tags:
+    /// the first build that has them all, e.g. `2.14.0-ddn262`.
     pub(crate) tag: Option<String>,
 }
 
-/// What a ticket's patches say about its delivery, on the branches that
-/// decide it in its view (`TagFamily::views`). Abandoned patches do not count.
+impl BranchDelivery {
+    /// Every one of its changes has landed: an EMF pull request once merged
+    /// into the branch, a Lustre patch once in a ddn tag.
+    pub(crate) fn landed(&self) -> bool {
+        self.merged && (self.emf || self.tag.is_some())
+    }
+}
+
+/// What a ticket's Lustre patches and EMF pull requests say about its
+/// delivery, on the branches that decide it in its view (`TagFamily::views`,
+/// `emf_branches`). Abandoned and closed ones do not count.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Delivery {
-    /// Each of those branches it has a patch on.
+    /// Each of those branches it has a change on.
     pub(crate) branches: Vec<BranchDelivery>,
-    /// Every one of those patches is merged.
+    /// Every one of those changes is merged.
     pub(crate) merged: bool,
+    /// Every one has landed: the ticket is done, whatever Jira says. One
+    /// merged change still waiting for its tag, or one in review, keeps it open.
+    pub(crate) done: bool,
     /// A customer ticket with patches in review: the release expected to
     /// carry them (`TagFamily::release`; of two, the later).
     pub(crate) release: Option<String>,
@@ -435,6 +475,8 @@ pub(crate) struct Ticket {
     pub(crate) committed: Option<Committed>,
     /// Its Gerrit changes on the branches in `tag_families`.
     pub(crate) patches: Vec<PatchRef>,
+    /// The EMF pull requests that name it.
+    pub(crate) prs: Vec<PullRef>,
     /// What they say about its delivery, where they decide it; Jira's fix
     /// state, fix date and status weight give way to it.
     pub(crate) delivery: Option<Delivery>,
@@ -631,8 +673,8 @@ pub(crate) struct DateGroup {
     /// or idle over `idle_alert_days` (unknown counts). Empty when on or off
     /// track.
     pub(crate) stalled: Vec<IssueKey>,
-    /// Its complete tickets: their patches are merged, so they are never stalled.
-    pub(crate) complete: usize,
+    /// Its done tickets: every change landed, so they are never stalled.
+    pub(crate) done: usize,
 }
 
 /// One entry in a blocker list.
@@ -652,8 +694,8 @@ pub(crate) struct Blocker {
     pub(crate) tone: Tone,
     /// As on the ticket: what says its fix awaits verification.
     pub(crate) verification: Option<String>,
-    /// Its patches are all merged; listed only because a committed date passed.
-    pub(crate) complete: bool,
+    /// Done: every change landed; listed only because a committed date passed.
+    pub(crate) done: bool,
 }
 
 /// One pass rate on the build-health tile: Lustre sessions with no failure

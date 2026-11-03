@@ -67,6 +67,8 @@ HTTP headers, never logged:
   the llm_jira tool's `~/.jira-tool.json`.
 - Gerrit: `GERRIT_URL`, `GERRIT_USER`, `GERRIT_PASS` in the gerrit-cli tool's
   `~/.config/gerrit-cli/.env`.
+- GitHub: the gh CLI's token (`gh auth token` for `github_user`), run from
+  `gh_command` at each refresh.
 - EXA Reporter: no credentials; its certificate
   (`~/work/src/lustre_reporter/certs/cert.pem`) is pinned, and no other is accepted.
 
@@ -80,6 +82,7 @@ Everything the dashboard writes is created readable by the owner only.
 | `data/history.jsonl` | One line per refresh: open items and blockers per view, and whether the refresh was partial (a source failed, or data a verdict depends on was missing); kept for trend charts later |
 | `data/comments.json` | Newest human comment per ticket, read again when the ticket or the bot list changes |
 | `data/tags.json` | First ddn tag of each merged Gerrit revision |
+| `data/pulls.json` | EMF pull requests read so far; a refresh reads only those updated since |
 | `data/refresh.log` | What the last refresh wrote to stderr |
 | `data/refresh.lock` | Held by the running refresh |
 | `certs/cert.pem`, `certs/key.pem` | The dashboard's certificate and key |
@@ -164,41 +167,49 @@ Defined in `src/rules.rs` and tuned in `config.local.json`:
   related to". A fix's date is the release date of its EX fixVersion; EXR
   fixVersions are planning quarters ("2025Q4"), so an EXR fix gives no date.
   The Fix complete tile counts tickets whose every linked fix, EX or EXR,
-  was read and is done, and complete tickets (see Patches);
+  was read and is done, and done tickets (see Changes);
   once a fix is under way, an open customer ticket no longer counts as "not
-  started" in its date group. Where patches decide a ticket's delivery, they
+  started" in its date group. Where changes decide a ticket's delivery, they
   stand in for its linked fixes.
-- Patches (`tag_families`): every ticket a view shows is looked up in
-  Gerrit, on b_es6_0 and b_es7_0 only (master is not searched): changes
-  whose commit message names the ticket or its mirror copy. Commit messages
-  never name a customer ticket, so for one the EX and LU tickets linked as
-  its fixes (see Fixes) count too; any other ticket counts only its own
-  changes, since a linked ticket's changes are often other work (EX-1917,
-  a To Do item, would otherwise read as delivered by EX-2010's merged scsi
-  changes). Abandoned changes do not count. Where a branch's `views` name
-  the view, its patches decide delivery in place of Jira: es6 in every
+- Changes (`tag_families`, `emf_branches`): every ticket a view shows is
+  looked up in Gerrit, on b_es6_0 and b_es7_0 only (master is not
+  searched), and among the EMF pull requests on GitHub: changes whose
+  commit message, or pull request title or branch, names the ticket or its
+  mirror copy. Commit messages never name a customer ticket, so for one the
+  EX and LU tickets linked as its fixes (see Fixes) count too; any other
+  ticket counts only its own changes, since a linked ticket's changes are
+  often other work (EX-1917, a To Do item, would otherwise read as
+  delivered by EX-2010's merged scsi changes). Abandoned changes and pull
+  requests closed unmerged do not count. They decide delivery in place of
+  Jira where their branch belongs to the view: Lustre es6 in every
   customer group and EXA6, es7 in GCP (which runs both) and EXA7 Beta and
-  GA. A ticket with patches on two such branches is complete once both are
-  merged.
-  - Complete: every such patch is merged, in a ddn tag or due in the next
-    one. A complete ticket is almost done, never stalled: it leaves the
-    S1/S2 idle limits, the idle tile, its date group's "not started or
-    idle", the blocker lists (a customer ticket stays only when its
-    committed date passed, chipped Complete) and the release risk tiles
-    (Blocker priority, Critical, Past due date, which say how many they
-    leave out). It needs no date. It counts as complete instead: in the Fix
-    complete and Dated tiles, its date group ("2 complete") and the open
-    scope of EXA6 and EXA7; the tables show a Complete pill on a green row.
-  - Customer tickets: a complete one reads as fix delivered; one with a
-    patch in review reads as under way and is dated by the release
-    expected to carry it (`release`: ES6.3.10 for es6, EXA7 Beta for es7;
-    of two, the later). A committed date still comes first. The Fix column
-    shows the patches: "es6 ddn262", "es6 merged (next tag)", "es7 review,
-    for EXA7 Beta".
-  - Release items: a complete item counts as done in the projection and
-    one with a patch in review weighs as In Review and counts as in review,
-    whatever the Jira status; judged per item, a complete item is never at
-    risk and one in review has started.
+  GA; EMF master for ES6.3.10 and EXA7 GA, maint/sfa-6.3.9_C1 for
+  ES6.3.9_C1, release/EXA7_beta for EXA7 Beta, feature/nvmesh-p0 for EXA
+  SD, and any of those for customer tickets.
+  - Done: every such change has landed, a Lustre patch in a ddn tag, an EMF
+    pull request merged into its branch. One change still in review, or
+    merged but not in a tag yet, keeps the ticket open, whatever the others
+    say. A done ticket is never stalled: it leaves the S1/S2 idle limits,
+    the idle tile, its date group's "not started or idle", the blocker
+    lists (a customer ticket stays only when its committed date passed,
+    chipped Done) and the release risk tiles (Blocker priority, Critical,
+    Past due date, which say how many they leave out). It needs no date.
+    It counts as done instead: in the Fix complete and Dated tiles, its date
+    group ("2 done") and the open scope of EXA6 and EXA7; the tables show a
+    Done pill on a green row.
+  - Merged, not in a tag yet: almost done. It is open, but nothing waits
+    on anyone, so it is never stalled by idle time, and the Fix complete
+    tile counts it apart ("1 more merged, due in the next tag").
+  - Customer tickets: a done one reads as fix delivered; one with a change
+    not landed reads as under way and is dated by the release expected to
+    carry its Lustre patches (`release`: ES6.3.10 for es6, EXA7 Beta for
+    es7; of two, the later). A committed date still comes first. The Fix
+    column shows the changes: "es6 ddn262", "es6 merged (next tag)", "es7
+    review, for EXA7 Beta", "EMF release/EXA7_beta merged".
+  - Release items: a done item counts as done in the projection; one with
+    a change not landed weighs as In Review and counts as in review,
+    whatever the Jira status; judged per item, a done or merged item is
+    never at risk and one in review has started.
 - Test cases (issue type Test) are not counted as release blockers or in
   EXA SD's open scope. A release view lists them in a table of their own,
   below the other items.
